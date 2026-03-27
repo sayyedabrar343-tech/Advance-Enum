@@ -1,0 +1,430 @@
+================================================================================
+RED TEAM VAPT SCRIPT – COMPLETE COMMAND LIST & EXPLANATIONS
+================================================================================
+
+The script automatically reads your directory structure: open_ports/[PORT]/[IP]/
+- Each folder under open_ports is a port number (e.g., 445).
+- Inside each port folder, each subfolder is an IP address (e.g., 192.168.1.100).
+- The script iterates over all such combinations, detects the service, and runs the commands below.
+
+All commands are executed with <IP> and <PORT> replaced automatically at runtime.
+
+================================================================================
+1. SERVICE DETECTION (always runs first)
+================================================================================
+Command:
+  nmap -sCV -p <PORT> --version-intensity 5 <IP>
+Explanation:
+  - -sC: runs default scripts (safe)
+  - -V: version detection
+  - -p <PORT>: scan only that port
+  - --version-intensity 5: higher accuracy version detection
+  - This identifies the actual service (e.g., http, smb, ssh) and saves the output in scan.log.
+
+================================================================================
+2. SMB (detected service: smb, microsoft-ds, netbios-ssn)
+================================================================================
+[1] timeout 5 nc -vn <IP> <PORT>
+    Explanation: Banner grab – connects to the port and prints any welcome banner.
+
+[2] nmap -p <PORT> --script=vuln <IP>
+    Explanation: Runs all Nmap vulnerability scripts (safe) – detects EternalBlue, etc.
+
+[3] nmap -p <PORT> --script smb-security-mode <IP>
+    Explanation: Checks if SMB signing is enabled/disabled (disabling is a vulnerability).
+
+[4] nmap -p <PORT> --script smb-protocols <IP>
+    Explanation: Detects SMBv1 (vulnerable to EternalBlue, etc.).
+
+[5] smbclient -L //<IP> -N -p <PORT>
+    Explanation: Null session – tries to list shares without credentials. (LOGIN ATTEMPT)
+
+[6] smbclient //<IP>/IPC\$ -U 'guest%' -p <PORT> -c 'help'
+    Explanation: Tries to log in as guest (empty password). (LOGIN ATTEMPT: guest)
+
+[7] rpcclient -U '' -N <IP> -c 'enumdomusers'
+    Explanation: Enumerates domain users using null session (if allowed).
+
+[8] crackmapexec smb <IP>
+    Explanation: Gathers SMB information (no login).
+
+[9] crackmapexec smb <IP> -u 'ptest2' -p 'Teq%Mezew9koy35'
+    Explanation: Tests the provided credential (ptest2). (LOGIN ATTEMPT)
+
+[10] crackmapexec smb <IP> -u 'administrator' -p 'Teq%Mezew9koy35'
+     Explanation: Tests the provided credential (administrator). (LOGIN ATTEMPT)
+
+[11] crackmapexec smb <IP> -u 'guest' -p ''
+     Explanation: Tests guest login. (LOGIN ATTEMPT: guest)
+
+[12] timeout 60 enum4linux-ng -A <IP>
+     Explanation: Comprehensive enumeration using null session (safe).
+
+================================================================================
+3. HTTP/HTTPS (detected service: http, https, http-proxy, ssl/http)
+================================================================================
+[1] curl -k -s -I -m 10 http://<IP>:<PORT>/
+    Explanation: Fetches HTTP headers (k = ignore SSL certs, s = silent, I = headers only).
+
+[2] curl -k -s -m 10 http://<IP>:<PORT>/robots.txt
+    Explanation: Retrieves robots.txt (may reveal hidden paths).
+
+[3] curl -k -s -o /dev/null -w '%{http_code}' -m 3 http://<IP>:<PORT>/index.html
+    Explanation: Checks common files (index.html, index.php, default.html, .git/HEAD, .env) and prints HTTP status code.
+
+[4] curl -k -s -o /dev/null -w '%{http_code}' -m 3 http://<IP>:<PORT>/admin/
+    Explanation: Checks common directories (admin, login, wp-admin, phpmyadmin, api, console, jenkins, git) for existence.
+
+[5] timeout 30 whatweb -a 3 http://<IP>:<PORT>/
+    Explanation: Detects web technologies (CMS, server, frameworks) with aggressive level 3.
+
+[6] timeout 90 nikto -h <IP> -p <PORT> -ssl -maxtime 45 -Format txt
+    Explanation: Web vulnerability scanner (quick, safe).
+
+[7] (if HTTPS) timeout 30 sslscan --no-failed <IP>:<PORT>
+    Explanation: Scans SSL/TLS ciphers and detects weak ones.
+
+[8] (if HTTPS) echo | openssl s_client -connect <IP>:<PORT> -servername <IP> 2>/dev/null | openssl x509 -text 2>/dev/null | grep -E '(Subject:|Issuer:|Not Before:|Not After:|DNS:)'
+    Explanation: Extracts and prints SSL certificate details.
+
+[9] nmap -p <PORT> --script=vuln <IP>
+    Explanation: Runs all HTTP vulnerability scripts (safe).
+
+[10] (if AGGRESSIVE=true) nmap -p <PORT> --script http-enum,http-headers,http-methods,http-title,http-robots.txt <IP>
+     Explanation: Additional enumeration scripts when aggressive mode is on.
+
+[11] curl -k -s -o /dev/null -w '%{http_code}' -u 'ptest2:Teq%Mezew9koy35' -m 5 http://<IP>:<PORT>/
+     Explanation: Tests basic authentication with provided credential. (LOGIN ATTEMPT)
+
+[12] curl -k -s -o /dev/null -w '%{http_code}' -u 'administrator:Teq%Mezew9koy35' -m 5 http://<IP>:<PORT>/
+     Explanation: Tests basic authentication with administrator credential. (LOGIN ATTEMPT)
+
+[13] curl -k -s -o /dev/null -w '%{http_code}' -u 'anonymous:' -m 5 http://<IP>:<PORT>/
+     Explanation: Tests anonymous basic auth (empty password). (LOGIN ATTEMPT: anonymous)
+
+[14] curl -k -s -o /dev/null -w '%{http_code}' -X POST -d 'username=ptest2&password=Teq%Mezew9koy35' -m 5 http://<IP>:<PORT>/admin
+     Explanation: Tests form login on common paths (admin, login, wp-login.php, administrator) with provided credentials. (LOGIN ATTEMPT)
+
+[15] Same as above for administrator credentials and anonymous.
+
+================================================================================
+4. RDP (detected service: ms-wbt-server, rdp)
+================================================================================
+[1] nmap -p <PORT> --script rdp-enum-encryption <IP>
+    Explanation: Lists supported encryption levels.
+
+[2] nmap -p <PORT> --script rdp-ntlm-info <IP>
+    Explanation: Checks if Network Level Authentication (NLA) is enabled.
+
+[3] nmap -p <PORT> --script=vuln <IP>
+    Explanation: Runs RDP vulnerability scripts (includes MS12-020).
+
+[4] (if AGGRESSIVE=true) nmap -p <PORT> --script rdp-* <IP>
+    Explanation: Runs all RDP scripts when aggressive mode is on.
+
+[5] timeout 10 xfreerdp /v:<IP>:<PORT> /cert-ignore /authonly
+    Explanation: Attempts to connect to RDP (authonly) to check if service is reachable.
+
+[6] timeout 10 xfreerdp /v:<IP>:<PORT> /u:ptest2 /p:Teq%Mezew9koy35 /cert-ignore /authonly
+    Explanation: Tests provided credential with xfreerdp. (LOGIN ATTEMPT)
+
+[7] timeout 10 xfreerdp /v:<IP>:<PORT> /u:administrator /p:Teq%Mezew9koy35 /cert-ignore /authonly
+    Explanation: Tests administrator credential. (LOGIN ATTEMPT)
+
+[8] timeout 10 xfreerdp /v:<IP>:<PORT> /u:guest /p: /cert-ignore /authonly
+    Explanation: Tests guest login. (LOGIN ATTEMPT: guest)
+
+[9] timeout 20 sslscan <IP>:<PORT>
+    Explanation: SSL/TLS scan for RDP (if RDP uses SSL).
+
+[10] crackmapexec rdp <IP>
+     Explanation: Gathers RDP information via CrackMapExec.
+
+[11] crackmapexec rdp <IP> -u 'ptest2' -p 'Teq%Mezew9koy35'
+     Explanation: Tests credential with CrackMapExec. (LOGIN ATTEMPT)
+
+[12] crackmapexec rdp <IP> -u 'administrator' -p 'Teq%Mezew9koy35'
+     Explanation: Tests administrator credential. (LOGIN ATTEMPT)
+
+[13] crackmapexec rdp <IP> -u 'guest' -p ''
+     Explanation: Tests guest. (LOGIN ATTEMPT: guest)
+
+================================================================================
+5. WinRM (detected service: winrm, wsman)
+================================================================================
+[1] curl -k -s -I -m 10 http://<IP>:<PORT>/wsman
+    Explanation: Checks the WS-Management endpoint, reveals authentication methods.
+
+[2] nmap -p <PORT> --script http-ntlm-info <IP>
+    Explanation: Retrieves NTLM information (domain, etc.).
+
+[3] nmap -p <PORT> --script winrm-enum,winrm-auth <IP>
+    Explanation: Enumerates WinRM authentication methods.
+
+[4] crackmapexec winrm <IP>
+    Explanation: Gathers WinRM info via CrackMapExec.
+
+[5] crackmapexec winrm <IP> -u 'ptest2' -p 'Teq%Mezew9koy35'
+    Explanation: Tests credential. (LOGIN ATTEMPT)
+
+[6] crackmapexec winrm <IP> -u 'administrator' -p 'Teq%Mezew9koy35'
+    Explanation: Tests administrator credential. (LOGIN ATTEMPT)
+
+[7] crackmapexec winrm <IP> -u 'guest' -p ''
+    Explanation: Tests guest. (LOGIN ATTEMPT: guest)
+
+[8] timeout 10 evil-winrm -i <IP> -u ptest2 -p Teq%Mezew9koy35 -c 'whoami'
+    Explanation: Tests credential with evil-winrm (executes whoami if successful). (LOGIN ATTEMPT)
+
+[9] timeout 10 evil-winrm -i <IP> -u administrator -p Teq%Mezew9koy35 -c 'whoami'
+    Explanation: Tests administrator credential. (LOGIN ATTEMPT)
+
+[10] timeout 10 evil-winrm -i <IP> -u guest -p '' -c 'whoami'
+     Explanation: Tests guest. (LOGIN ATTEMPT: guest)
+
+================================================================================
+6. LDAP (detected service: ldap, ldaps)
+================================================================================
+[1] ldapsearch -x -H ldap://<IP>:<PORT> -b '' -s base
+    Explanation: Attempts an anonymous bind to get root DSE. (LOGIN ATTEMPT: anonymous)
+
+[2] ldapsearch -x -H ldap://<IP>:<PORT> -D 'ptest2' -w 'Teq%Mezew9koy35' -b '' -s base
+    Explanation: Tests provided credential with LDAP bind. (LOGIN ATTEMPT)
+
+[3] ldapsearch -x -H ldap://<IP>:<PORT> -D 'administrator' -w 'Teq%Mezew9koy35' -b '' -s base
+    Explanation: Tests administrator credential. (LOGIN ATTEMPT)
+
+================================================================================
+7. SSH (detected service: ssh)
+================================================================================
+[1] timeout 5 nc -vn <IP> <PORT>
+    Explanation: Banner grab.
+
+[2] nmap -sCV -p <PORT> --version-intensity 5 <IP>
+    Explanation: Service detection with version and default scripts (already run, but repeated for completeness).
+
+[3] nmap -p <PORT> --script ssh2-enum-algos <IP>
+    Explanation: Lists supported encryption algorithms – detects weak ciphers (vulnerability).
+
+[4] (if AGGRESSIVE=true) nmap -p <PORT> --script ssh-auth-methods,ssh-hostkey,ssh-run <IP>
+    Explanation: Additional scripts for authentication methods, host key, etc.
+
+[5] timeout 5 sshpass -p 'Teq%Mezew9koy35' ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no ptest2@<IP> -p <PORT> 'whoami'
+    Explanation: Tests provided credential with sshpass. (LOGIN ATTEMPT)
+
+[6] timeout 5 sshpass -p 'Teq%Mezew9koy35' ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no administrator@<IP> -p <PORT> 'whoami'
+    Explanation: Tests administrator credential. (LOGIN ATTEMPT)
+
+[7] timeout 5 sshpass -p '' ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no guest@<IP> -p <PORT> 'whoami'
+    Explanation: Tests guest login (empty password). (LOGIN ATTEMPT: guest)
+
+[8] crackmapexec ssh <IP>
+    Explanation: Gathers SSH info via CrackMapExec.
+
+[9] crackmapexec ssh <IP> -u 'ptest2' -p 'Teq%Mezew9koy35'
+    Explanation: Tests credential via CME. (LOGIN ATTEMPT)
+
+[10] crackmapexec ssh <IP> -u 'administrator' -p 'Teq%Mezew9koy35'
+     Explanation: Tests administrator credential via CME. (LOGIN ATTEMPT)
+
+[11] crackmapexec ssh <IP> -u 'guest' -p ''
+     Explanation: Tests guest via CME. (LOGIN ATTEMPT: guest)
+
+================================================================================
+8. FTP (detected service: ftp)
+================================================================================
+[1] timeout 5 ftp -n <IP> <PORT>
+    Explanation: Fetches FTP banner.
+
+[2] echo -e 'USER anonymous\r\nPASS anonymous\r\nQUIT\r\n' | timeout 5 nc <IP> <PORT>
+    Explanation: Tests anonymous login with password "anonymous". (LOGIN ATTEMPT: anonymous)
+
+[3] echo -e 'USER anonymous\r\nPASS \r\nQUIT\r\n' | timeout 5 nc <IP> <PORT>
+    Explanation: Tests anonymous login with empty password. (LOGIN ATTEMPT: anonymous)
+
+[4] echo -e 'USER ptest2\r\nPASS Teq%Mezew9koy35\r\nQUIT\r\n' | timeout 5 nc <IP> <PORT>
+    Explanation: Tests provided credential. (LOGIN ATTEMPT)
+
+[5] echo -e 'USER administrator\r\nPASS Teq%Mezew9koy35\r\nQUIT\r\n' | timeout 5 nc <IP> <PORT>
+    Explanation: Tests administrator credential. (LOGIN ATTEMPT)
+
+[6] echo -e 'USER guest\r\nPASS \r\nQUIT\r\n' | timeout 5 nc <IP> <PORT>
+    Explanation: Tests guest login. (LOGIN ATTEMPT: guest)
+
+[7] nmap -p <PORT> --script ftp-anon,ftp-bounce,ftp-libopie,ftp-proftpd-backdoor <IP>
+    Explanation: Runs FTP scripts to detect anonymous login, bounce attacks, etc.
+
+================================================================================
+9. DNS (detected service: domain, dns)
+================================================================================
+[1] dig axfr @<IP>
+    Explanation: Attempts a DNS zone transfer – if successful, reveals all records (vulnerability).
+
+[2] nmap -p <PORT> --script dns-recursion,dns-nsid,dns-zone-transfer <IP>
+    Explanation: Checks for DNS recursion and other vulnerabilities.
+
+================================================================================
+10. NFS (detected service: nfs)
+================================================================================
+[1] showmount -e <IP>
+    Explanation: Lists exported NFS shares – if any are world-readable, a vulnerability.
+
+[2] nmap -p <PORT> --script nfs-showmount,nfs-ls,nfs-statfs <IP>
+    Explanation: NFS enumeration scripts.
+
+================================================================================
+11. SNMP (detected service: snmp)
+================================================================================
+[1] timeout 10 snmpwalk -v2c -c public <IP> system
+    Explanation: Walks SNMP tree with public community – information leakage vulnerability.
+
+[2] nmap -p <PORT> --script snmp-info,snmp-interfaces,snmp-netstat,snmp-processes,snmp-sysdescr <IP>
+    Explanation: SNMP enumeration scripts.
+
+================================================================================
+12. RPC (detected service: rpcbind, rpc, msrpc)
+================================================================================
+[1] timeout 5 nc -vn <IP> <PORT>
+    Explanation: Banner grab.
+
+[2] rpcinfo -p <IP>
+    Explanation: Lists RPC endpoints – reveals available services.
+
+[3] timeout 30 rpcdump.py <IP>
+    Explanation: Dumps RPC interfaces (if impacket installed).
+
+[4] rpcclient -U '' -N <IP> -c 'enumdomusers'
+    Explanation: Null session user enumeration (if allowed). (LOGIN ATTEMPT: null)
+
+[5] timeout 60 enum4linux-ng -A <IP>
+    Explanation: Comprehensive enumeration (includes null session).
+
+[6] crackmapexec smb <IP>
+    Explanation: SMB info (often same machine).
+
+[7] crackmapexec smb <IP> -u 'ptest2' -p 'Teq%Mezew9koy35'
+    Explanation: Tests credential via CME. (LOGIN ATTEMPT)
+
+[8] crackmapexec smb <IP> -u 'administrator' -p 'Teq%Mezew9koy35'
+    Explanation: Tests administrator credential. (LOGIN ATTEMPT)
+
+[9] crackmapexec smb <IP> -u 'guest' -p ''
+    Explanation: Tests guest. (LOGIN ATTEMPT: guest)
+
+[10] nmap -p <PORT> --script rpcinfo,msrpc-enum <IP>
+     Explanation: RPC scripts.
+
+================================================================================
+13. Kerberos (detected service: kerberos-sec)
+================================================================================
+[1] nmap -p <PORT> --script krb5-enum-users <IP>
+    Explanation: Enumerates Kerberos users (safe, no brute force).
+
+[2] dig -t SRV _kerberos._tcp.<IP>
+    Explanation: Finds Kerberos domain name.
+
+[3] dig -t SRV _ldap._tcp.<IP>
+    Explanation: Finds LDAP domain name.
+
+================================================================================
+14. MSSQL (detected service: ms-sql-s)
+================================================================================
+[1] nmap -p <PORT> --script ms-sql-info,ms-sql-ntlm-info <IP>
+    Explanation: Retrieves SQL Server information.
+
+[2] timeout 10 mssqlclient.py ptest2:Teq%Mezew9koy35@<IP> -windows-auth
+    Explanation: Tests provided credential with mssqlclient. (LOGIN ATTEMPT)
+
+[3] timeout 10 mssqlclient.py administrator:Teq%Mezew9koy35@<IP> -windows-auth
+    Explanation: Tests administrator credential. (LOGIN ATTEMPT)
+
+[4] timeout 10 mssqlclient.py sa:sa@<IP> -windows-auth
+    Explanation: Tests common default sa:sa. (LOGIN ATTEMPT)
+
+================================================================================
+15. MySQL (detected service: mysql)
+================================================================================
+[1] nmap -p <PORT> --script mysql-info,mysql-empty-password <IP>
+    Explanation: Gets MySQL version and checks for empty root password.
+
+[2] mysql -h <IP> -P <PORT> -u ptest2 -pTeq%Mezew9koy35 -e 'SELECT 1'
+    Explanation: Tests provided credential. (LOGIN ATTEMPT)
+
+[3] mysql -h <IP> -P <PORT> -u administrator -pTeq%Mezew9koy35 -e 'SELECT 1'
+    Explanation: Tests administrator credential. (LOGIN ATTEMPT)
+
+[4] mysql -h <IP> -P <PORT> -u root -e 'SELECT 1'
+    Explanation: Tests root with empty password. (LOGIN ATTEMPT)
+
+================================================================================
+16. PostgreSQL (detected service: postgresql)
+================================================================================
+[1] PGPASSWORD=Teq%Mezew9koy35 psql -h <IP> -p <PORT> -U ptest2 -c 'SELECT 1'
+    Explanation: Tests provided credential. (LOGIN ATTEMPT)
+
+[2] PGPASSWORD=Teq%Mezew9koy35 psql -h <IP> -p <PORT> -U administrator -c 'SELECT 1'
+    Explanation: Tests administrator credential. (LOGIN ATTEMPT)
+
+[3] PGPASSWORD= psql -h <IP> -p <PORT> -U postgres -c 'SELECT 1'
+    Explanation: Tests default postgres user with empty password. (LOGIN ATTEMPT)
+
+================================================================================
+17. Redis (detected service: redis)
+================================================================================
+[1] echo -e 'INFO\r\nQUIT\r\n' | timeout 5 nc <IP> <PORT>
+    Explanation: Sends INFO command – leaks server info if unauthenticated.
+
+[2] timeout 5 redis-cli -h <IP> -p <PORT> INFO
+    Explanation: Same as above, using redis-cli.
+
+[3] nmap -p <PORT> --script redis-info <IP>
+    Explanation: Nmap script to gather Redis info.
+
+================================================================================
+18. Elasticsearch (detected service: elasticsearch)
+================================================================================
+[1] curl -s -m 10 http://<IP>:<PORT>/
+    Explanation: Fetches root endpoint, reveals version.
+
+[2] curl -s -m 10 http://<IP>:<PORT>/_cat/indices
+    Explanation: Lists indices – may expose data.
+
+[3] nmap -p <PORT> --script http-elasticsearch* <IP>
+    Explanation: Elasticsearch enumeration scripts.
+
+================================================================================
+19. MongoDB (detected service: mongodb)
+================================================================================
+[1] nmap -p <PORT> --script mongodb-info <IP>
+    Explanation: Gathers MongoDB version and info.
+
+[2] echo 'db.version()' | timeout 5 mongo --host <IP> --port <PORT>
+    Explanation: Connects and retrieves version (if no auth).
+
+================================================================================
+20. NetBIOS (detected service: netbios-ns, netbios-ssn, netbios-dgm)
+================================================================================
+[1] nbtscan -r <IP>
+    Explanation: Resolves NetBIOS names (hostname, domain).
+
+[2] nmap -p <PORT> --script nbstat <IP>
+    Explanation: Nmap nbstat script.
+
+================================================================================
+21. Generic (unknown service)
+================================================================================
+[1] timeout 5 nc -vn <IP> <PORT>
+    Explanation: Banner grab.
+
+[2] nmap -sCV -p <PORT> --version-intensity 5 <IP>
+    Explanation: Service detection with version and default scripts.
+
+[3] echo -e 'USER anonymous\r\nPASS anonymous\r\nQUIT\r\n' | timeout 5 nc <IP> <PORT>
+    Explanation: Probes FTP.
+
+[4] echo -e 'HELO test\r\nQUIT\r\n' | timeout 5 nc <IP> <PORT>
+    Explanation: Probes SMTP.
+
+================================================================================
+END OF COMMAND LIST
+================================================================================
