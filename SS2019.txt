@@ -1,0 +1,885 @@
+SQL SERVER 2019 — FULL AUTHORIZED PENTEST
+SAFE vs VULNERABLE OUTPUT — READ-ONLY CHECKS
+================================================
+
+Screenshot context:
+- SQL Server 2019
+- Build shown: 15.0.4480.2
+- Enterprise Edition
+- SSMS connection
+
+IMPORTANT:
+- Run only on explicitly authorized systems.
+- "VULNERABLE/POTENTIAL" means investigate/report only after validating
+  business requirement, scope, exploitability and impact.
+- Commands are intentionally read-only.
+- Do NOT extract/crack password hashes, recover credential secrets, export
+  private keys, dump sensitive data, execute OS commands, modify permissions,
+  modify jobs, or change SQL Server configuration unless explicitly authorized.
+- Run the database-level commands in EVERY in-scope database, not just master.
+
+
+================================================================
+1. SQL SERVER VERSION
+================================================================
+
+COMMAND:
+SELECT @@SERVERNAME AS server_name, @@VERSION AS version_info,
+SERVERPROPERTY('ProductVersion') AS product_version,
+SERVERPROPERTY('ProductLevel') AS product_level,
+SERVERPROPERTY('Edition') AS edition;
+
+SAFE / EXPECTED:
+SAFE: Supported build and patch level matches client baseline.
+
+VULNERABLE / POTENTIAL FINDING:
+VULNERABLE/POTENTIAL: Unsupported/EOL build or missing required security updates. Version alone is not a finding; validate the patch baseline.
+
+================================================================
+2. SQL SERVER SERVICE ACCOUNT
+================================================================
+
+COMMAND:
+SELECT servicename, startup_type_desc, status_desc, startup_account,
+last_startup_time, filename FROM sys.dm_server_services;
+
+SAFE / EXPECTED:
+SAFE: Dedicated approved service identity with least OS privilege.
+
+VULNERABLE / POTENTIAL FINDING:
+VULNERABLE/POTENTIAL: SQL Server runs as Domain Admin or another unnecessarily privileged human/domain account.
+
+================================================================
+3. CURRENT ACCOUNT / SYSADMIN
+================================================================
+
+COMMAND:
+SELECT SUSER_SNAME() AS login_name, ORIGINAL_LOGIN() AS original_login,
+USER_NAME() AS database_user, DB_NAME() AS current_database,
+IS_SRVROLEMEMBER('sysadmin') AS is_sysadmin;
+
+SAFE / EXPECTED:
+SAFE: Normal application/test account has is_sysadmin = 0.
+
+VULNERABLE / POTENTIAL FINDING:
+VULNERABLE/POTENTIAL: Unauthorized account has is_sysadmin = 1.
+
+================================================================
+4. ALL SERVER LOGINS/GROUPS
+================================================================
+
+COMMAND:
+SELECT name,type_desc,is_disabled,default_database_name,create_date,modify_date
+FROM sys.server_principals ORDER BY name;
+
+SAFE / EXPECTED:
+SAFE: Only approved, necessary accounts; stale accounts disabled.
+
+VULNERABLE / POTENTIAL FINDING:
+VULNERABLE/POTENTIAL: Unknown privileged account, stale enabled account, or unapproved shared/service account.
+
+================================================================
+5. SQL AUTHENTICATION LOGINS
+================================================================
+
+COMMAND:
+SELECT name,is_disabled,is_policy_checked,is_expiration_checked,
+default_database_name,create_date,modify_date FROM sys.sql_logins ORDER BY name;
+
+SAFE / EXPECTED:
+SAFE: SQL logins are required; policy/expiration match baseline; unused logins disabled.
+
+VULNERABLE / POTENTIAL FINDING:
+VULNERABLE/POTENTIAL: Unnecessary SQL auth, stale enabled login, policy disabled without exception, unexpected privileged login.
+
+================================================================
+6. ALL SERVER ROLE MEMBERSHIPS
+================================================================
+
+COMMAND:
+SELECT r.name AS role_name,m.name AS member_name,m.type_desc AS member_type
+FROM sys.server_role_members srm
+JOIN sys.server_principals r ON srm.role_principal_id=r.principal_id
+JOIN sys.server_principals m ON srm.member_principal_id=m.principal_id
+ORDER BY r.name,m.name;
+
+SAFE / EXPECTED:
+SAFE: Least privilege; only approved members of powerful roles.
+
+VULNERABLE / POTENTIAL FINDING:
+VULNERABLE/POTENTIAL: Unexpected sysadmin/securityadmin/serveradmin/dbcreator/bulkadmin or other powerful membership.
+
+================================================================
+7. EXPLICIT SERVER PERMISSIONS
+================================================================
+
+COMMAND:
+SELECT g.name AS principal_name,g.type_desc,p.permission_name,p.state_desc
+FROM sys.server_permissions p JOIN sys.server_principals g
+ON p.grantee_principal_id=g.principal_id ORDER BY g.name,p.permission_name;
+
+SAFE / EXPECTED:
+SAFE: Explicit permissions are necessary and least-privileged.
+
+VULNERABLE / POTENTIAL FINDING:
+VULNERABLE/POTENTIAL: CONTROL SERVER, ALTER ANY LOGIN, IMPERSONATE, or other powerful rights granted unexpectedly.
+
+================================================================
+8. ALL DATABASES
+================================================================
+
+COMMAND:
+SELECT name,state_desc,user_access_desc,recovery_model_desc,is_read_only,
+is_trustworthy_on,is_db_chaining_on,is_encrypted,containment_desc
+FROM sys.databases ORDER BY name;
+
+SAFE / EXPECTED:
+SAFE: Expected DBs; access, TRUSTWORTHY, chaining and encryption match baseline.
+
+VULNERABLE / POTENTIAL FINDING:
+VULNERABLE/POTENTIAL: Unexpected sensitive DB, TRUSTWORTHY ON without need, chaining ON without need, required encryption absent.
+
+================================================================
+9. DATABASE USERS — RUN IN EACH DATABASE
+================================================================
+
+COMMAND:
+SELECT name,type_desc,authentication_type_desc,default_schema_name,create_date,modify_date
+FROM sys.database_principals WHERE principal_id > 4 ORDER BY name;
+
+SAFE / EXPECTED:
+SAFE: Only required users/groups.
+
+VULNERABLE / POTENTIAL FINDING:
+VULNERABLE/POTENTIAL: Unexpected/stale user or unauthorized privileged account.
+
+================================================================
+10. DATABASE ROLE MEMBERSHIP — EACH DATABASE
+================================================================
+
+COMMAND:
+SELECT r.name AS role_name,m.name AS member_name,m.type_desc AS member_type
+FROM sys.database_role_members drm
+JOIN sys.database_principals r ON drm.role_principal_id=r.principal_id
+JOIN sys.database_principals m ON drm.member_principal_id=m.principal_id
+ORDER BY r.name,m.name;
+
+SAFE / EXPECTED:
+SAFE: Users have only required DB roles.
+
+VULNERABLE / POTENTIAL FINDING:
+VULNERABLE/POTENTIAL: Application/low-privileged user in db_owner, db_securityadmin, db_ddladmin, or equivalent powerful role without need.
+
+================================================================
+11. EXPLICIT DB PERMISSIONS — EACH DATABASE
+================================================================
+
+COMMAND:
+SELECT g.name AS grantee_name,g.type_desc,p.state_desc,p.permission_name,
+OBJECT_SCHEMA_NAME(p.major_id) AS object_schema,OBJECT_NAME(p.major_id) AS object_name
+FROM sys.database_permissions p JOIN sys.database_principals g
+ON p.grantee_principal_id=g.principal_id ORDER BY g.name,p.permission_name;
+
+SAFE / EXPECTED:
+SAFE: Least-privileged object/database access.
+
+VULNERABLE / POTENTIAL FINDING:
+VULNERABLE/POTENTIAL: Unexpected CONTROL, ALTER, IMPERSONATE, TAKE OWNERSHIP, or broad write/execute access.
+
+================================================================
+12. PUBLIC PERMISSIONS — EACH DATABASE
+================================================================
+
+COMMAND:
+SELECT p.state_desc,p.permission_name,OBJECT_SCHEMA_NAME(p.major_id) AS object_schema,
+OBJECT_NAME(p.major_id) AS object_name FROM sys.database_permissions p
+WHERE p.grantee_principal_id=DATABASE_PRINCIPAL_ID('public')
+ORDER BY p.permission_name;
+
+SAFE / EXPECTED:
+SAFE: PUBLIC has only normal required permissions.
+
+VULNERABLE / POTENTIAL FINDING:
+VULNERABLE/POTENTIAL: PUBLIC has powerful access to sensitive objects.
+
+================================================================
+13. GUEST — EACH DATABASE
+================================================================
+
+COMMAND:
+SELECT name,type_desc,authentication_type_desc
+FROM sys.database_principals WHERE name='guest';
+
+SAFE / EXPECTED:
+SAFE: Guest access follows hardening baseline.
+
+VULNERABLE / POTENTIAL FINDING:
+VULNERABLE/POTENTIAL: Unexpected guest access to sensitive DBs. Validate application dependencies before remediation.
+
+================================================================
+14. ORPHANED DB USERS — EACH DATABASE
+================================================================
+
+COMMAND:
+SELECT dp.name AS database_user,dp.type_desc FROM sys.database_principals dp
+LEFT JOIN sys.server_principals sp ON dp.sid=sp.sid
+WHERE dp.authentication_type=1 AND dp.principal_id>4 AND sp.sid IS NULL;
+
+SAFE / EXPECTED:
+SAFE: No unexpected orphaned users.
+
+VULNERABLE / POTENTIAL FINDING:
+VULNERABLE/POTENTIAL: Orphaned privileged user/stale access path; validate before reporting.
+
+================================================================
+15. SERVER CREDENTIALS / STORED CREDENTIAL METADATA
+================================================================
+
+COMMAND:
+SELECT name,credential_identity,create_date,modify_date
+FROM sys.credentials ORDER BY name;
+
+SAFE / EXPECTED:
+SAFE: Only approved credentials; identities are least-privileged.
+
+VULNERABLE / POTENTIAL FINDING:
+VULNERABLE/POTENTIAL: Unexpected credential or credential identity is overprivileged.
+
+NOTE:
+SECRET SAFETY: This inventories metadata only. Do NOT extract credential secrets.
+
+================================================================
+16. SQL AGENT PROXIES
+================================================================
+
+COMMAND:
+SELECT p.name AS proxy_name,p.enabled,c.name AS credential_name,
+c.credential_identity FROM msdb.dbo.sysproxies p
+LEFT JOIN sys.credentials c ON p.credential_id=c.credential_id ORDER BY p.name;
+
+SAFE / EXPECTED:
+SAFE: Only approved proxies using least-privileged identities.
+
+VULNERABLE / POTENTIAL FINDING:
+VULNERABLE/POTENTIAL: Low-privileged users can use a privileged proxy or unexpected enabled proxy exists.
+
+================================================================
+17. SQL AGENT JOBS
+================================================================
+
+COMMAND:
+SELECT name,enabled,SUSER_SNAME(owner_sid) AS owner_name,
+date_created,date_modified FROM msdb.dbo.sysjobs ORDER BY name;
+
+SAFE / EXPECTED:
+SAFE: Jobs and owners are approved.
+
+VULNERABLE / POTENTIAL FINDING:
+VULNERABLE/POTENTIAL: Privileged job owned/controlled by unauthorized or stale account.
+
+================================================================
+18. SQL AGENT JOB STEPS — METADATA
+================================================================
+
+COMMAND:
+SELECT j.name AS job_name,js.step_id,js.step_name,js.subsystem,
+js.database_name,js.proxy_id FROM msdb.dbo.sysjobs j
+JOIN msdb.dbo.sysjobsteps js ON j.job_id=js.job_id ORDER BY j.name,js.step_id;
+
+SAFE / EXPECTED:
+SAFE: Steps are expected and controlled.
+
+VULNERABLE / POTENTIAL FINDING:
+VULNERABLE/POTENTIAL: Unexpected CmdExec/PowerShell step, privileged proxy, or unauthorized control.
+
+NOTE:
+DO NOT EXECUTE job steps during a read-only assessment.
+
+================================================================
+19. DATABASE-SCOPED CREDENTIALS — EACH RELEVANT DB
+================================================================
+
+COMMAND:
+SELECT name,credential_id FROM sys.database_scoped_credentials ORDER BY name;
+
+SAFE / EXPECTED:
+SAFE: Only required credentials exist.
+
+VULNERABLE / POTENTIAL FINDING:
+VULNERABLE/POTENTIAL: Unexpected credential or excessive identity privilege.
+
+NOTE:
+SECRET SAFETY: Do not attempt to recover secrets.
+
+================================================================
+20. EXTERNAL DATA SOURCES — EACH RELEVANT DB
+================================================================
+
+COMMAND:
+SELECT name,type_desc,location,connection_options
+FROM sys.external_data_sources ORDER BY name;
+
+SAFE / EXPECTED:
+SAFE: Only approved destinations.
+
+VULNERABLE / POTENTIAL FINDING:
+VULNERABLE/POTENTIAL: Unknown/unauthorized external destination or excessive access.
+
+================================================================
+21. REMOTE TCP ENCRYPTION / CLEAR-TEXT CHECK
+================================================================
+
+COMMAND:
+SELECT session_id,client_net_address,local_net_address,local_tcp_port,
+net_transport,protocol_type,auth_scheme,encrypt_option
+FROM sys.dm_exec_connections WHERE net_transport='TCP' ORDER BY session_id;
+
+SAFE / EXPECTED:
+SAFE: In-scope remote TCP sessions show encrypt_option = TRUE when TLS is required; expected auth/source.
+
+VULNERABLE / POTENTIAL FINDING:
+VULNERABLE/POTENTIAL: In-scope remote TCP session has encrypt_option = FALSE where encryption is mandatory, or unexpected remote source/authentication.
+
+NOTE:
+IMPORTANT: Shared Memory is local. Do not call Shared Memory + FALSE an unencrypted remote connection.
+
+================================================================
+22. CONNECTIONS MAPPED TO USERS/PROGRAMS
+================================================================
+
+COMMAND:
+SELECT c.session_id,s.login_name,s.original_login_name,s.host_name,
+s.program_name,c.client_net_address,c.net_transport,c.auth_scheme,c.encrypt_option
+FROM sys.dm_exec_connections c JOIN sys.dm_exec_sessions s
+ON c.session_id=s.session_id WHERE c.net_transport='TCP' ORDER BY c.session_id;
+
+SAFE / EXPECTED:
+SAFE: Known clients/programs, expected logins, encrypted TCP.
+
+VULNERABLE / POTENTIAL FINDING:
+VULNERABLE/POTENTIAL: Unknown client, unexpected login/program combination, or unencrypted TCP.
+
+================================================================
+23. TCP ENDPOINTS
+================================================================
+
+COMMAND:
+SELECT name,state_desc,type_desc,protocol_desc,port,is_admin_endpoint
+FROM sys.tcp_endpoints ORDER BY name;
+
+SAFE / EXPECTED:
+SAFE: Only expected endpoints/ports.
+
+VULNERABLE / POTENTIAL FINDING:
+VULNERABLE/POTENTIAL: Unexpected listening endpoint/port.
+
+================================================================
+24. ALL SQL ENDPOINTS
+================================================================
+
+COMMAND:
+SELECT name,type_desc,state_desc,protocol_desc,is_admin_endpoint
+FROM sys.endpoints ORDER BY name;
+
+SAFE / EXPECTED:
+SAFE: Only expected enabled endpoints.
+
+VULNERABLE / POTENTIAL FINDING:
+VULNERABLE/POTENTIAL: Unexpected enabled endpoint.
+
+================================================================
+25. REMOTE ACCESS CONFIGURATION
+================================================================
+
+COMMAND:
+SELECT name,value,value_in_use FROM sys.configurations
+WHERE name IN ('remote access','remote admin connections')
+ORDER BY name;
+
+SAFE / EXPECTED:
+SAFE: Matches approved architecture.
+
+VULNERABLE / POTENTIAL FINDING:
+VULNERABLE/POTENTIAL: Remote administrative capability enabled without business requirement.
+
+================================================================
+26. DATABASE/TDE ENCRYPTION
+================================================================
+
+COMMAND:
+SELECT DB_NAME(database_id) AS database_name,encryption_state,
+percent_complete,key_algorithm,key_length
+FROM sys.dm_database_encryption_keys ORDER BY database_id;
+
+SAFE / EXPECTED:
+SAFE: Sensitive DBs encrypted where policy requires.
+
+VULNERABLE / POTENTIAL FINDING:
+VULNERABLE/POTENTIAL: Required TDE/database encryption absent.
+
+NOTE:
+NOTE: TDE/storage encryption is different from network TLS.
+
+================================================================
+27. SECURITY-SENSITIVE SQL CONFIGURATION
+================================================================
+
+COMMAND:
+SELECT name,value,value_in_use FROM sys.configurations
+WHERE name IN ('xp_cmdshell','Ole Automation Procedures',
+'Ad Hoc Distributed Queries','clr enabled','clr strict security',
+'Database Mail XPs','cross db ownership chaining',
+'contained database authentication') ORDER BY name;
+
+SAFE / EXPECTED:
+SAFE: Dangerous features disabled unless specifically required; baseline is documented.
+
+VULNERABLE / POTENTIAL FINDING:
+VULNERABLE/POTENTIAL: xp_cmdshell/OLE/Ad Hoc/CLR/chaining/contained auth enabled without justified need. Enabled != automatically exploitable.
+
+================================================================
+28. TRUSTWORTHY + CHAINING + OWNER
+================================================================
+
+COMMAND:
+SELECT name,is_trustworthy_on,is_db_chaining_on,SUSER_SNAME(owner_sid) AS owner_name
+FROM sys.databases ORDER BY name;
+
+SAFE / EXPECTED:
+SAFE: TRUSTWORTHY/chaining off unless required; approved owner.
+
+VULNERABLE / POTENTIAL FINDING:
+VULNERABLE/POTENTIAL: TRUSTWORTHY ON combined with privileged owner/permissions, or unexpected DB chaining.
+
+================================================================
+29. SA ACCOUNT
+================================================================
+
+COMMAND:
+SELECT name,type_desc,is_disabled,is_policy_checked,is_expiration_checked,
+default_database_name FROM sys.sql_logins WHERE name='sa';
+
+SAFE / EXPECTED:
+SAFE: sa disabled where baseline requires it; if enabled, use is justified.
+
+VULNERABLE / POTENTIAL FINDING:
+VULNERABLE/POTENTIAL: sa enabled without requirement or poor governance.
+
+NOTE:
+DO NOT password-guess.
+
+================================================================
+30. DATABASE OWNERS
+================================================================
+
+COMMAND:
+SELECT name AS database_name,SUSER_SNAME(owner_sid) AS owner_name
+FROM sys.databases ORDER BY name;
+
+SAFE / EXPECTED:
+SAFE: Approved admin/service ownership.
+
+VULNERABLE / POTENTIAL FINDING:
+VULNERABLE/POTENTIAL: Unexpected/low-privileged owner, especially with TRUSTWORTHY ON.
+
+================================================================
+31. CERTIFICATES
+================================================================
+
+COMMAND:
+SELECT name,subject,issuer_name,expiry_date,start_date,
+pvt_key_encryption_type_desc FROM sys.certificates ORDER BY name;
+
+SAFE / EXPECTED:
+SAFE: Expected, valid certificates and appropriate private-key protection.
+
+VULNERABLE / POTENTIAL FINDING:
+VULNERABLE/POTENTIAL: Expired/unexpected certificate or weak protection.
+
+NOTE:
+DO NOT export private keys.
+
+================================================================
+32. SYMMETRIC KEYS
+================================================================
+
+COMMAND:
+SELECT name,key_length,algorithm_desc,create_date,modify_date
+FROM sys.symmetric_keys ORDER BY name;
+
+SAFE / EXPECTED:
+SAFE: Expected keys and approved algorithms/key lengths.
+
+VULNERABLE / POTENTIAL FINDING:
+VULNERABLE/POTENTIAL: Weak/deprecated algorithm or unexpected key.
+
+================================================================
+33. STORED PROCEDURES
+================================================================
+
+COMMAND:
+SELECT SCHEMA_NAME(schema_id) AS schema_name,name,create_date,modify_date
+FROM sys.procedures ORDER BY schema_name,name;
+
+SAFE / EXPECTED:
+SAFE: Procedures expected.
+
+VULNERABLE / POTENTIAL FINDING:
+VULNERABLE/POTENTIAL: Unexpected privileged procedure accessible to low-privileged user.
+
+================================================================
+34. EXECUTE PERMISSIONS
+================================================================
+
+COMMAND:
+SELECT g.name AS grantee_name,g.type_desc,p.permission_name,
+SCHEMA_NAME(o.schema_id) AS schema_name,o.name AS object_name
+FROM sys.database_permissions p JOIN sys.database_principals g
+ON p.grantee_principal_id=g.principal_id JOIN sys.objects o
+ON p.major_id=o.object_id WHERE p.permission_name='EXECUTE'
+ORDER BY g.name,schema_name,object_name;
+
+SAFE / EXPECTED:
+SAFE: EXECUTE rights are required.
+
+VULNERABLE / POTENTIAL FINDING:
+VULNERABLE/POTENTIAL: Low-privileged user can execute sensitive/admin procedures.
+
+================================================================
+35. SENSITIVE COLUMN INVENTORY — EACH DATABASE
+================================================================
+
+COMMAND:
+SELECT SCHEMA_NAME(t.schema_id) AS schema_name,t.name AS table_name,
+c.name AS column_name,ty.name AS data_type FROM sys.tables t
+JOIN sys.columns c ON t.object_id=c.object_id
+JOIN sys.types ty ON c.user_type_id=ty.user_type_id
+WHERE c.name LIKE '%password%' OR c.name LIKE '%secret%' OR c.name LIKE '%token%'
+OR c.name LIKE '%ssn%' OR c.name LIKE '%social%' OR c.name LIKE '%card%'
+OR c.name LIKE '%account%' OR c.name LIKE '%apikey%'
+ORDER BY schema_name,table_name,column_name;
+
+SAFE / EXPECTED:
+SAFE: Sensitive fields are appropriately protected.
+
+VULNERABLE / POTENTIAL FINDING:
+VULNERABLE/POTENTIAL: Plaintext passwords/secrets/tokens appear to be stored/accessibly exposed.
+
+NOTE:
+DO NOT dump sensitive values.
+
+================================================================
+36. SQL SERVER AUDIT OBJECTS
+================================================================
+
+COMMAND:
+SELECT name,status_desc,create_date,modify_date
+FROM sys.server_audits ORDER BY name;
+
+SAFE / EXPECTED:
+SAFE: Required auditing exists and is enabled.
+
+VULNERABLE / POTENTIAL FINDING:
+VULNERABLE/POTENTIAL: Required auditing absent/disabled or target is inadequately protected.
+
+================================================================
+37. DATABASE AUDIT SPECIFICATIONS — EACH DB
+================================================================
+
+COMMAND:
+SELECT name,is_state_enabled,create_date,modify_date
+FROM sys.database_audit_specifications ORDER BY name;
+
+SAFE / EXPECTED:
+SAFE: Required database audit specs enabled.
+
+VULNERABLE / POTENTIAL FINDING:
+VULNERABLE/POTENTIAL: Required database auditing absent/disabled.
+
+================================================================
+38. LINKED SERVERS
+================================================================
+
+COMMAND:
+EXEC master.dbo.sp_linkedservers;
+
+SAFE / EXPECTED:
+SAFE: Only approved linked servers.
+
+VULNERABLE / POTENTIAL FINDING:
+VULNERABLE/POTENTIAL: Unknown linked server or unintended trust/data path.
+
+================================================================
+39. LINKED-SERVER SECURITY/SETTINGS
+================================================================
+
+COMMAND:
+SELECT name,product,provider,data_source,is_linked,
+is_rpc_out_enabled,is_data_access_enabled,is_remote_login_enabled,is_rpc_enabled
+FROM sys.servers WHERE is_linked=1 ORDER BY name;
+
+SAFE / EXPECTED:
+SAFE: RPC/data access/remote login only enabled when required.
+
+VULNERABLE / POTENTIAL FINDING:
+VULNERABLE/POTENTIAL: Unnecessary RPC OUT, remote login, data access, or excessive trust.
+
+================================================================
+40. ALL EXPLICIT DB PERMISSIONS
+================================================================
+
+COMMAND:
+SELECT g.name AS grantee_name,g.type_desc,p.state_desc,p.permission_name,
+OBJECT_SCHEMA_NAME(p.major_id) AS object_schema,OBJECT_NAME(p.major_id) AS object_name
+FROM sys.database_permissions p JOIN sys.database_principals g
+ON p.grantee_principal_id=g.principal_id ORDER BY g.name,p.permission_name;
+
+SAFE / EXPECTED:
+SAFE: Least privilege.
+
+VULNERABLE / POTENTIAL FINDING:
+VULNERABLE/POTENTIAL: Powerful permissions unexpectedly granted.
+
+================================================================
+41. CONFIGURATION SNAPSHOT
+================================================================
+
+COMMAND:
+SELECT name,value,value_in_use FROM sys.configurations
+WHERE name IN ('xp_cmdshell','Ole Automation Procedures',
+'Ad Hoc Distributed Queries','clr enabled','clr strict security',
+'cross db ownership chaining','contained database authentication',
+'remote admin connections','remote access','Database Mail XPs')
+ORDER BY name;
+
+SAFE / EXPECTED:
+SAFE: Each setting matches documented baseline.
+
+VULNERABLE / POTENTIAL FINDING:
+VULNERABLE/POTENTIAL: Security-sensitive/remote feature enabled without requirement.
+
+================================================================
+42. CURRENT DATABASE PERMISSIONS
+================================================================
+
+COMMAND:
+SELECT * FROM fn_my_permissions(NULL,'DATABASE');
+
+SAFE / EXPECTED:
+SAFE: Only permissions required for current account.
+
+VULNERABLE / POTENTIAL FINDING:
+VULNERABLE/POTENTIAL: Unexpected CONTROL/ALTER/IMPERSONATE/broad access.
+
+================================================================
+43. CURRENT SERVER PERMISSIONS
+================================================================
+
+COMMAND:
+SELECT * FROM fn_my_permissions(NULL,'SERVER');
+
+SAFE / EXPECTED:
+SAFE: Only required server permissions.
+
+VULNERABLE / POTENTIAL FINDING:
+VULNERABLE/POTENTIAL: CONTROL SERVER or other powerful rights unexpectedly available.
+
+================================================================
+44. ALL ACTIVE TCP SESSIONS
+================================================================
+
+COMMAND:
+SELECT session_id,login_name,host_name,program_name
+FROM sys.dm_exec_sessions WHERE is_user_process=1 ORDER BY session_id;
+
+SAFE / EXPECTED:
+SAFE: Sessions belong to expected users/apps/hosts.
+
+VULNERABLE / POTENTIAL FINDING:
+VULNERABLE/POTENTIAL: Unexpected active account/host/program. Investigate rather than assume compromise.
+
+================================================================
+45. ENCRYPTION ENFORCEMENT — CONFIGURATION MANAGER
+================================================================
+
+COMMAND:
+GUI CHECK (read-only):
+SQL Server Configuration Manager
+ -> SQL Server Network Configuration
+ -> Protocols for <instance>
+ -> Properties
+ -> Flags
+ -> Force Encryption
+
+SAFE / EXPECTED:
+SAFE: Force Encryption = Yes where policy mandates TLS.
+
+VULNERABLE / POTENTIAL FINDING:
+VULNERABLE/POTENTIAL: Force Encryption = No where mandatory TLS is required.
+
+NOTE:
+Do not change this setting during a read-only assessment.
+
+================================================================
+46. LOGIN AUDITING
+================================================================
+
+COMMAND:
+SELECT name,value,value_in_use FROM sys.configurations
+WHERE name LIKE '%login auditing%';
+
+SAFE / EXPECTED:
+SAFE: Meets organization's logging baseline.
+
+VULNERABLE / POTENTIAL FINDING:
+VULNERABLE/POTENTIAL: Required login auditing is absent/insufficient; verify SIEM/centralized logging first.
+
+================================================================
+47. DEFAULT DATABASES
+================================================================
+
+COMMAND:
+SELECT name,type_desc,is_disabled,default_database_name
+FROM sys.server_principals WHERE type IN ('S','U','G') ORDER BY name;
+
+SAFE / EXPECTED:
+SAFE: Valid, expected default DBs.
+
+VULNERABLE / POTENTIAL FINDING:
+VULNERABLE/POTENTIAL: Stale account or unexpected sensitive default database.
+
+================================================================
+48. DATABASE ENCRYPTION KEYS
+================================================================
+
+COMMAND:
+SELECT DB_NAME(database_id) AS database_name,encryption_state,
+key_algorithm,key_length FROM sys.dm_database_encryption_keys;
+
+SAFE / EXPECTED:
+SAFE: Required DB encryption is active.
+
+VULNERABLE / POTENTIAL FINDING:
+VULNERABLE/POTENTIAL: Required encryption missing.
+
+================================================================
+49. DATABASE MASTER KEY METADATA
+================================================================
+
+COMMAND:
+SELECT name,key_length,algorithm_desc,create_date,modify_date
+FROM sys.symmetric_keys WHERE name='##MS_DatabaseMasterKey##';
+
+SAFE / EXPECTED:
+SAFE: Expected master key/approved crypto configuration.
+
+VULNERABLE / POTENTIAL FINDING:
+VULNERABLE/POTENTIAL: Weak/obsolete crypto configuration where policy requires stronger controls.
+
+================================================================
+50. FINAL QUICK SNAPSHOT
+================================================================
+
+COMMAND:
+SELECT @@SERVERNAME AS server_name,SUSER_SNAME() AS current_login,
+IS_SRVROLEMEMBER('sysadmin') AS is_sysadmin,
+SERVERPROPERTY('ProductVersion') AS product_version,
+SERVERPROPERTY('Edition') AS edition,
+SERVERPROPERTY('IsIntegratedSecurityOnly') AS windows_auth_only;
+
+SAFE / EXPECTED:
+SAFE: Expected server/account, normal account is_sysadmin=0, supported build, auth mode matches baseline.
+
+VULNERABLE / POTENTIAL FINDING:
+VULNERABLE/POTENTIAL: Unauthorized sysadmin, unsupported build, unexpected account, or auth mode conflicts with policy.
+
+================================================================
+CRITICAL CHECKS YOU SPECIFICALLY ASKED FOR
+================================================================
+
+1) ALL USERS' ACCESS:
+- sys.server_role_members
+- sys.server_permissions
+- sys.database_role_members (run in every DB)
+- sys.database_permissions (run in every DB)
+- PUBLIC permissions
+- GUEST
+- IMPERSONATE
+- orphaned users
+
+2) STORED CREDENTIALS:
+- sys.credentials
+- SQL Agent proxies
+- database_scoped_credentials
+- linked servers
+- external data sources
+- sensitive column inventory
+Metadata is safe to enumerate. Do not retrieve secrets/hashes/private keys.
+
+3) CLEAR-TEXT NETWORK TRAFFIC:
+Use sys.dm_exec_connections and check:
+    net_transport = TCP
+    encrypt_option = TRUE
+
+If an in-scope remote TCP connection has:
+    encrypt_option = FALSE
+while TLS/encryption is required by policy,
+that is a potential clear-text SQL traffic finding.
+
+Also verify SQL Server Configuration Manager:
+Protocols for <instance> -> Flags -> Force Encryption.
+
+4) MISCONFIGURATION:
+Check:
+- xp_cmdshell
+- Ole Automation Procedures
+- Ad Hoc Distributed Queries
+- CLR / CLR strict security
+- TRUSTWORTHY
+- cross database ownership chaining
+- contained database authentication
+- remote admin connections
+- SQL Agent
+- linked-server RPC/data access
+- SA status
+- service account
+- auditing
+- TDE/database encryption
+
+================================================================
+DO NOT CONFUSE THESE
+================================================================
+
+encrypt_option = TRUE
+    = network connection encryption for that SQL connection.
+
+is_encrypted = 1
+    = database encryption status (e.g. TDE), NOT proof that network traffic
+      is encrypted.
+
+Kerberos
+    = authentication mechanism, NOT the same thing as TLS encryption.
+
+Shared Memory
+    = local SQL Server connection; do not treat it as a remote clear-text
+      network connection.
+
+================================================================
+REPORTING RULE
+================================================================
+
+A finding should normally contain:
+- Title
+- Affected server/database/account
+- Evidence/output
+- Expected secure configuration
+- Observed configuration
+- Security impact
+- Severity/CVSS according to engagement methodology
+- Remediation
+- Business justification/exception if applicable
+
+Never call a configuration "vulnerable" only because it is enabled. Confirm
+whether it is required and whether the tested account can actually abuse it.
+
+END
