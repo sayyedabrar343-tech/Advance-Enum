@@ -1,0 +1,131 @@
+SQL SERVER - TRUSTWORTHY / DBATools FOLLOW-UP CHECKS
+==========================================================
+
+Run this complete block in SSMS.
+All commands are READ-ONLY validation checks.
+
+1. CHECK TRUSTWORTHY DATABASES
+------------------------------
+
+SELECT
+    name,
+    is_trustworthy_on,
+    is_db_chaining_on,
+    SUSER_SNAME(owner_sid) AS owner_name,
+    IS_SRVROLEMEMBER('sysadmin', SUSER_SNAME(owner_sid)) AS owner_is_sysadmin
+FROM sys.databases
+WHERE is_trustworthy_on = 1;
+
+
+2. CHECK EXECUTE AS MODULES
+---------------------------
+
+SELECT
+    DB_NAME() AS database_name,
+    o.name,
+    o.type_desc,
+    m.execute_as_principal_id,
+    USER_NAME(m.execute_as_principal_id) AS execute_as_user
+FROM sys.objects o
+JOIN sys.sql_modules m
+    ON o.object_id = m.object_id
+WHERE m.execute_as_principal_id IS NOT NULL;
+
+
+3. CHECK DATABASE-LEVEL PERMISSIONS
+-----------------------------------
+
+SELECT
+    dp.state_desc,
+    dp.permission_name,
+    pr.name AS principal_name,
+    pr.type_desc
+FROM sys.database_permissions dp
+JOIN sys.database_principals pr
+    ON dp.grantee_principal_id = pr.principal_id
+WHERE dp.class_desc = 'DATABASE'
+ORDER BY pr.name, dp.permission_name;
+
+
+4. CHECK USER-DEFINED ASSEMBLIES
+--------------------------------
+
+SELECT
+    name,
+    permission_set_desc,
+    is_user_defined
+FROM sys.assemblies
+WHERE is_user_defined = 1;
+
+
+5. CHECK PRIVILEGED DATABASE ROLE MEMBERS
+------------------------------------------
+
+SELECT
+    r.name AS role_name,
+    p.name AS member_name,
+    p.type_desc
+FROM sys.database_role_members drm
+JOIN sys.database_principals r
+    ON drm.role_principal_id = r.principal_id
+JOIN sys.database_principals p
+    ON drm.member_principal_id = p.principal_id
+WHERE r.name IN ('db_owner', 'db_securityadmin', 'db_ddladmin');
+
+
+6. CHECK IMPERSONATE PERMISSIONS
+--------------------------------
+
+SELECT
+    dp.state_desc,
+    dp.permission_name,
+    grantee.name AS grantee_name,
+    grantee.type_desc
+FROM sys.database_permissions dp
+JOIN sys.database_principals grantee
+    ON dp.grantee_principal_id = grantee.principal_id
+WHERE dp.permission_name = 'IMPERSONATE';
+
+
+7. OPTIONAL: CHECK OBJECT-LEVEL EXECUTE PERMISSIONS
+----------------------------------------------------
+
+SELECT
+    dp.state_desc,
+    dp.permission_name,
+    grantee.name AS grantee_name,
+    grantee.type_desc,
+    OBJECT_SCHEMA_NAME(dp.major_id) AS schema_name,
+    OBJECT_NAME(dp.major_id) AS object_name
+FROM sys.database_permissions dp
+JOIN sys.database_principals grantee
+    ON dp.grantee_principal_id = grantee.principal_id
+WHERE dp.class_desc = 'OBJECT_OR_COLUMN'
+  AND dp.permission_name IN ('EXECUTE', 'CONTROL', 'TAKE OWNERSHIP')
+ORDER BY grantee.name, schema_name, object_name;
+
+
+8. OPTIONAL: CHECK HIGH-RISK ASSEMBLY PERMISSIONS
+-------------------------------------------------
+
+SELECT
+    name,
+    permission_set_desc,
+    is_user_defined
+FROM sys.assemblies
+WHERE permission_set_desc IN ('EXTERNAL_ACCESS', 'UNSAFE');
+
+
+INTERPRETATION
+==============
+
+- TRUSTWORTHY = 1 alone does NOT confirm a vulnerability.
+- TRUSTWORTHY = 1 + privileged owner + an exploitable privilege path is more significant.
+- Pay particular attention to EXECUTE AS, IMPERSONATE, db_owner membership,
+  CONTROL permissions, and EXTERNAL_ACCESS/UNSAFE assemblies.
+- An empty result set is generally a good sign for that specific check.
+- Do not make configuration changes during validation.
+
+After execution, save/copy all result sets. These outputs can be reviewed
+together to determine whether the configuration is actually exploitable or
+only a hardening observation.
