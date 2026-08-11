@@ -1,0 +1,1022 @@
+================================================================
+COMPLETE SQL SERVER 2019 PENTEST COMMANDS - ONE LINERS
+ALL COMMANDS WITH SAFE/VULNERABLE OUTPUT & REASON IN COLUMN/ROW FORMAT
+MISCONFIGURATION COMMANDS ADDED (TOTAL 45+ COMMANDS)
+================================================================
+
+================================================================
+COMMAND 1: XP_CMDSHELL - OS COMMAND EXECUTION
+================================================================
+
+SELECT name, value_in_use FROM sys.configurations WHERE name = 'xp_cmdshell';
+
+SAFE OUTPUT:
+name        | value_in_use
+------------|-------------
+xp_cmdshell | 0
+
+SAFE REASON: xp_cmdshell disabled hai. Koi bhi OS commands execute nahi kar sakta.
+
+VULNERABLE OUTPUT:
+name        | value_in_use
+------------|-------------
+xp_cmdshell | 1
+
+VULNERABLE REASON: xp_cmdshell ENABLED hai. Attacker OS commands chala sakta hai. Agar service account high privilege hai toh full system compromise possible.
+
+================================================================
+COMMAND 2: XP_CMDSHELL PERMISSIONS - KAUN EXECUTE KAR SAKTA HAI
+================================================================
+
+SELECT dp.state_desc, dp.permission_name, pr.name AS PrincipalName, pr.type_desc FROM master.sys.database_permissions dp JOIN master.sys.database_principals pr ON dp.grantee_principal_id = pr.principal_id WHERE dp.major_id = OBJECT_ID('master..xp_cmdshell');
+
+SAFE OUTPUT:
+state_desc | permission_name | PrincipalName | type_desc
+-----------|-----------------|---------------|----------
+(0 rows affected)
+
+SAFE REASON: Kisi ko bhi xp_cmdshell execute karne ki explicit permission nahi hai. Sirf sysadmin members execute kar sakte hain.
+
+VULNERABLE OUTPUT:
+state_desc | permission_name | PrincipalName | type_desc
+-----------|-----------------|---------------|----------
+GRANT      | EXECUTE         | app_user      | SQL_USER
+
+VULNERABLE REASON: Low-privileged user ko xp_cmdshell execute karne ki permission mili hai. Ye user OS commands chala sakta hai.
+
+================================================================
+COMMAND 3: CLR - CODE EXECUTION
+================================================================
+
+SELECT name, value_in_use FROM sys.configurations WHERE name IN ('clr enabled', 'clr strict security');
+
+SAFE OUTPUT:
+name            | value_in_use
+----------------|-------------
+clr enabled     | 0
+clr strict security | 1
+
+SAFE REASON: CLR disabled hai ya strict security enabled hai. Attacker malicious .NET assembly execute nahi kar sakta.
+
+VULNERABLE OUTPUT:
+name            | value_in_use
+----------------|-------------
+clr enabled     | 1
+clr strict security | 0
+
+VULNERABLE REASON: CLR ENABLED hai aur strict security DISABLED hai. Attacker UNSAFE assembly create kar sakta hai aur OS level code execute kar sakta hai.
+
+================================================================
+COMMAND 4: OLE AUTOMATION - RCE
+================================================================
+
+SELECT name, value_in_use FROM sys.configurations WHERE name = 'Ole Automation Procedures';
+
+SAFE OUTPUT:
+name                    | value_in_use
+------------------------|-------------
+Ole Automation Procedures | 0
+
+SAFE REASON: OLE Automation disabled hai. Attacker WScript.Shell jese COM objects use nahi kar sakta.
+
+VULNERABLE OUTPUT:
+name                    | value_in_use
+------------------------|-------------
+Ole Automation Procedures | 1
+
+VULNERABLE REASON: OLE Automation ENABLED hai. Attacker sp_OACreate aur sp_OAMethod use karke OS commands execute kar sakta hai.
+
+================================================================
+COMMAND 5: AD HOC DISTRIBUTED QUERIES - DATA EXFIL
+================================================================
+
+SELECT name, value_in_use FROM sys.configurations WHERE name = 'Ad Hoc Distributed Queries';
+
+SAFE OUTPUT:
+name                    | value_in_use
+------------------------|-------------
+Ad Hoc Distributed Queries | 0
+
+SAFE REASON: Ad Hoc queries disabled hai. Attacker OPENROWSET/OPENDATASOURCE use nahi kar sakta.
+
+VULNERABLE OUTPUT:
+name                    | value_in_use
+------------------------|-------------
+Ad Hoc Distributed Queries | 1
+
+VULNERABLE REASON: Ad Hoc Distributed Queries ENABLED hai. Attacker remote servers se connect kar sakta hai aur data exfiltrate kar sakta hai.
+
+================================================================
+COMMAND 6: DATABASE MAIL - PHISHING/SPAM
+================================================================
+
+SELECT name, value_in_use FROM sys.configurations WHERE name = 'Database Mail XPs';
+
+SAFE OUTPUT:
+name            | value_in_use
+----------------|-------------
+Database Mail XPs | 0
+
+SAFE REASON: Database Mail disabled hai. Attacker email bhej nahi sakta.
+
+VULNERABLE OUTPUT:
+name            | value_in_use
+----------------|-------------
+Database Mail XPs | 1
+
+VULNERABLE REASON: Database Mail ENABLED hai. Attacker sp_send_dbmail use karke data exfiltrate kar sakta hai ya phishing email bhej sakta hai.
+
+================================================================
+COMMAND 7: REMOTE ADMIN CONNECTIONS - DAC
+================================================================
+
+SELECT name, value_in_use FROM sys.configurations WHERE name = 'remote admin connections';
+
+SAFE OUTPUT:
+name                   | value_in_use
+-----------------------|-------------
+remote admin connections | 0
+
+SAFE REASON: Remote DAC disabled hai. Admin only local se connect kar sakte hain.
+
+VULNERABLE OUTPUT:
+name                   | value_in_use
+-----------------------|-------------
+remote admin connections | 1
+
+VULNERABLE REASON: Remote DAC ENABLED hai. Attacker remotely Dedicated Admin Connection use kar sakta hai. Even if server is down, admin connection possible hai.
+
+================================================================
+COMMAND 8: REMOTE ACCESS - REMOTE CONNECTIONS
+================================================================
+
+SELECT name, value_in_use FROM sys.configurations WHERE name = 'remote access';
+
+SAFE OUTPUT:
+name         | value_in_use
+-------------|-------------
+remote access | 1
+
+SAFE REASON: Remote access enabled hai (default). Yeh normal hai agar remote connections required hain.
+
+VULNERABLE OUTPUT:
+name         | value_in_use
+-------------|-------------
+remote access | 0
+
+VULNERABLE REASON: Remote access DISABLED hai. Iska matlab remote connections block hain. Agar remote access required hai toh misconfiguration hai.
+
+================================================================
+COMMAND 9: CROSS DB OWNERSHIP CHAINING - EOP
+================================================================
+
+SELECT name, is_db_chaining_on FROM sys.databases WHERE is_db_chaining_on = 1;
+
+SAFE OUTPUT:
+name | is_db_chaining_on
+-----|------------------
+(0 rows affected)
+
+SAFE REASON: Cross DB chaining disabled hai. Database boundaries maintained hain.
+
+VULNERABLE OUTPUT:
+name    | is_db_chaining_on
+--------|------------------
+ProdDB  | 1
+
+VULNERABLE REASON: Cross DB chaining ENABLED hai. Attacker ek database se doosre database mein objects access kar sakta hai bina permission check ke. Privilege escalation possible hai.
+
+================================================================
+COMMAND 10: CONTAINED DATABASE AUTHENTICATION - AUTH BYPASS
+================================================================
+
+SELECT name, value_in_use FROM sys.configurations WHERE name = 'contained database authentication';
+
+SAFE OUTPUT:
+name                           | value_in_use
+-------------------------------|-------------
+contained database authentication | 0
+
+SAFE REASON: Contained database authentication disabled hai. Users ko server-level login chahiye.
+
+VULNERABLE OUTPUT:
+name                           | value_in_use
+-------------------------------|-------------
+contained database authentication | 1
+
+VULNERABLE REASON: Contained database authentication ENABLED hai. Contained users bina server login ke authenticate kar sakte hain. Authentication bypass possible hai.
+
+================================================================
+COMMAND 11: CONTAINED DATABASES - AUTH BYPASS
+================================================================
+
+SELECT name, containment_desc FROM sys.databases WHERE containment_desc != 'NONE';
+
+SAFE OUTPUT:
+name | containment_desc
+-----|-----------------
+(0 rows affected)
+
+SAFE REASON: Koi contained database nahi hai.
+
+VULNERABLE OUTPUT:
+name    | containment_desc
+--------|-----------------
+ProdDB  | PARTIAL
+
+VULNERABLE REASON: Contained databases exist hain. In databases mein contained users bina server login ke authenticate kar sakte hain. Server-level security bypass possible hai.
+
+================================================================
+COMMAND 12: STORED CREDENTIALS - CREDENTIAL THEFT
+================================================================
+
+SELECT name, credential_identity, create_date, modify_date FROM sys.credentials;
+
+SAFE OUTPUT:
+name | credential_identity | create_date | modify_date
+-----|---------------------|-------------|------------
+(0 rows affected)
+
+SAFE REASON: Koi stored credentials nahi hain.
+
+VULNERABLE OUTPUT:
+name                | credential_identity   | create_date
+--------------------|-----------------------|------------------
+AdminProxyCred      | DOMAIN\Administrator  | 2024-01-15
+
+VULNERABLE REASON: Stored credentials exist hain. Agar low-privileged user inhe use kar sakta hai toh privilege escalation possible hai. Identity high privilege hai toh aur bhi dangerous.
+
+================================================================
+COMMAND 13: DATABASE SCOPED CREDENTIALS - CREDENTIAL THEFT
+================================================================
+
+SELECT name, credential_id, create_date FROM sys.database_scoped_credentials;
+
+SAFE OUTPUT:
+name | credential_id | create_date
+-----|---------------|------------
+(0 rows affected)
+
+SAFE REASON: Koi database scoped credentials nahi hain.
+
+VULNERABLE OUTPUT:
+name                        | credential_id | create_date
+----------------------------|---------------|------------
+AzureStorageCredential      | 1             | 2024-01-15
+
+VULNERABLE REASON: Database scoped credentials exist hain. External data access ke liye use ho sakte hain. Data exfiltration possible hai.
+
+================================================================
+COMMAND 14: SERVER IMPERSONATION - PRIVILEGE ESCALATION
+================================================================
+
+SELECT g.name AS grantee, t.name AS target_principal FROM sys.server_permissions sp JOIN sys.server_principals g ON sp.grantee_principal_id = g.principal_id JOIN sys.server_principals t ON sp.major_id = t.principal_id WHERE sp.permission_name = 'IMPERSONATE' AND g.type IN ('S', 'U', 'G') AND g.name NOT LIKE '##%' ORDER BY g.name;
+
+SAFE OUTPUT:
+grantee | target_principal
+--------|------------------
+(0 rows affected)
+
+SAFE REASON: Kisi ko bhi impersonation permission nahi hai.
+
+VULNERABLE OUTPUT:
+grantee  | target_principal
+---------|------------------
+app_user | sa
+
+VULNERABLE REASON: Low-privileged user sa ko impersonate kar sakta hai. Ye user sysadmin ban sakta hai. CRITICAL vulnerability hai.
+
+================================================================
+COMMAND 15: DATABASE IMPERSONATION - PRIVILEGE ESCALATION
+================================================================
+
+SELECT g.name AS grantee, t.name AS target_principal FROM sys.database_permissions sp JOIN sys.database_principals g ON sp.grantee_principal_id = g.principal_id JOIN sys.database_principals t ON sp.major_id = t.principal_id WHERE sp.permission_name = 'IMPERSONATE' AND g.principal_id > 4 ORDER BY g.name;
+
+SAFE OUTPUT:
+grantee | target_principal
+--------|------------------
+(0 rows affected)
+
+SAFE REASON: Kisi ko bhi database-level impersonation permission nahi hai.
+
+VULNERABLE OUTPUT:
+grantee  | target_principal
+---------|------------------
+app_user | dbo
+
+VULNERABLE REASON: Low-privileged user dbo ko impersonate kar sakta hai. Database ka full control le sakta hai.
+
+================================================================
+COMMAND 16: TRUSTWORTHY DATABASES - PRIVILEGE ESCALATION
+================================================================
+
+SELECT name, is_trustworthy_on, SUSER_SNAME(owner_sid) AS owner_name FROM sys.databases WHERE is_trustworthy_on = 1;
+
+SAFE OUTPUT:
+name | is_trustworthy_on | owner_name
+-----|-------------------|-----------
+(0 rows affected)
+
+SAFE REASON: Koi TRUSTWORTHY database nahi hai.
+
+VULNERABLE OUTPUT:
+name         | is_trustworthy_on | owner_name
+-------------|-------------------|-----------
+ProductionDB | 1                 | sa
+
+VULNERABLE REASON: TRUSTWORTHY ON hai aur owner sa/sysadmin hai. Attacker cross-database privilege escalation kar sakta hai.
+
+================================================================
+COMMAND 17: SA ACCOUNT STATUS - BRUTE FORCE TARGET
+================================================================
+
+SELECT name, is_disabled, is_policy_checked, is_expiration_checked FROM sys.sql_logins WHERE name = 'sa';
+
+SAFE OUTPUT:
+name | is_disabled | is_policy_checked | is_expiration_checked
+-----|-------------|-------------------|----------------------
+sa   | 1           | 1                 | 1
+
+SAFE REASON: SA account DISABLED hai. Brute force attack possible nahi hai.
+
+VULNERABLE OUTPUT:
+name | is_disabled | is_policy_checked | is_expiration_checked
+-----|-------------|-------------------|----------------------
+sa   | 0           | 0                 | 0
+
+VULNERABLE REASON: SA account ENABLED hai aur password policy DISABLED hai. Attacker brute force kar sakta hai.
+
+================================================================
+COMMAND 18: SERVER ROLE MEMBERSHIPS - PRIVILEGE ESCALATION
+================================================================
+
+SELECT r.name AS role_name, m.name AS member_name FROM sys.server_role_members srm JOIN sys.server_principals r ON srm.role_principal_id = r.principal_id JOIN sys.server_principals m ON srm.member_principal_id = m.principal_id WHERE r.name IN ('sysadmin', 'securityadmin', 'serveradmin', 'dbcreator', 'bulkadmin') AND m.name NOT LIKE '##%' ORDER BY r.name;
+
+SAFE OUTPUT:
+role_name | member_name
+----------|------------
+sysadmin  | DOMAIN\svc_sql
+
+SAFE REASON: Sirf approved admin accounts hi high-privilege roles mein hain.
+
+VULNERABLE OUTPUT:
+role_name | member_name
+----------|------------
+sysadmin  | app_user
+
+VULNERABLE REASON: Low-privileged user sysadmin role mein hai. Ye user full database control kar sakta hai.
+
+================================================================
+COMMAND 19: SERVER PERMISSIONS - PRIVILEGE ESCALATION
+================================================================
+
+SELECT p.name AS principal_name, pp.permission_name, pp.state_desc FROM sys.server_principals p JOIN sys.server_permissions pp ON p.principal_id = pp.grantee_principal_id WHERE p.type IN ('S', 'U', 'G') AND p.name NOT LIKE '##%' AND pp.permission_name IN ('CONTROL SERVER', 'ALTER ANY LOGIN', 'IMPERSONATE ANY LOGIN', 'SHUTDOWN') ORDER BY p.name;
+
+SAFE OUTPUT:
+principal_name | permission_name | state_desc
+---------------|-----------------|-----------
+(0 rows affected)
+
+SAFE REASON: Kisi ko bhi high-risk server permissions nahi hain.
+
+VULNERABLE OUTPUT:
+principal_name | permission_name | state_desc
+---------------|-----------------|-----------
+app_user       | CONTROL SERVER  | GRANT
+
+VULNERABLE REASON: Low-privileged user ko CONTROL SERVER permission mili hai. Ye user full server control kar sakta hai.
+
+================================================================
+COMMAND 20: DATABASE ROLE MEMBERSHIPS - PRIVILEGE ESCALATION
+================================================================
+
+SELECT r.name AS role_name, m.name AS member_name FROM sys.database_role_members drm JOIN sys.database_principals r ON drm.role_principal_id = r.principal_id JOIN sys.database_principals m ON drm.member_principal_id = m.principal_id WHERE r.name IN ('db_owner', 'db_securityadmin', 'db_ddladmin') AND m.principal_id > 4 ORDER BY r.name;
+
+SAFE OUTPUT:
+role_name | member_name
+----------|------------
+db_owner  | dbo
+
+SAFE REASON: Sirf dbo hi high-privilege database roles mein hai.
+
+VULNERABLE OUTPUT:
+role_name | member_name
+----------|------------
+db_owner  | app_user
+
+VULNERABLE REASON: Low-privileged user db_owner role mein hai. Ye user database ka full control kar sakta hai.
+
+================================================================
+COMMAND 21: DATABASE PERMISSIONS - PRIVILEGE ESCALATION
+================================================================
+
+SELECT g.name AS grantee_name, p.permission_name, OBJECT_NAME(p.major_id) AS object_name FROM sys.database_permissions p JOIN sys.database_principals g ON p.grantee_principal_id = g.principal_id WHERE p.permission_name IN ('CONTROL', 'ALTER', 'TAKE OWNERSHIP', 'IMPERSONATE') AND g.principal_id > 4 ORDER BY g.name;
+
+SAFE OUTPUT:
+grantee_name | permission_name | object_name
+-------------|-----------------|------------
+(0 rows affected)
+
+SAFE REASON: Kisi ko bhi high-risk database permissions nahi hain.
+
+VULNERABLE OUTPUT:
+grantee_name | permission_name | object_name
+-------------|-----------------|------------
+app_user     | CONTROL         | Users
+
+VULNERABLE REASON: Low-privileged user ko CONTROL permission mili hai sensitive table par. Ye user table read/modify/delete kar sakta hai.
+
+================================================================
+COMMAND 22: PUBLIC ROLE PERMISSIONS - UNAUTHORIZED ACCESS
+================================================================
+
+SELECT p.permission_name, OBJECT_NAME(p.major_id) AS object_name FROM sys.database_permissions p WHERE p.grantee_principal_id = DATABASE_PRINCIPAL_ID('public') AND p.permission_name IN ('SELECT', 'EXECUTE', 'CONTROL', 'ALTER', 'INSERT', 'UPDATE', 'DELETE');
+
+SAFE OUTPUT:
+permission_name | object_name
+----------------|------------
+(0 rows affected)
+
+SAFE REASON: PUBLIC ko koi sensitive permission nahi hai.
+
+VULNERABLE OUTPUT:
+permission_name | object_name
+----------------|------------
+SELECT          | CreditCards
+
+VULNERABLE REASON: PUBLIC role ko sensitive table par SELECT permission hai. Koi bhi user (including anonymous) credit card data dekh sakta hai.
+
+================================================================
+COMMAND 23: GUEST USER - UNAUTHORIZED ACCESS
+================================================================
+
+SELECT name, authentication_type_desc FROM sys.database_principals WHERE name = 'guest';
+
+SAFE OUTPUT:
+name  | authentication_type_desc
+------|--------------------------
+guest | NONE
+
+SAFE REASON: Guest user disabled hai. Koi bina login ke access nahi kar sakta.
+
+VULNERABLE OUTPUT:
+name  | authentication_type_desc
+------|--------------------------
+guest | INSTANCE
+
+VULNERABLE REASON: Guest user ENABLED hai. Koi bhi bina login ke database access kar sakta hai.
+
+================================================================
+COMMAND 24: ORPHANED USERS - PERSISTENCE/BACKDOOR
+================================================================
+
+SELECT dp.name AS database_user, dp.type_desc FROM sys.database_principals dp LEFT JOIN sys.server_principals sp ON dp.sid = sp.sid WHERE dp.authentication_type = 1 AND dp.principal_id > 4 AND sp.sid IS NULL;
+
+SAFE OUTPUT:
+database_user | type_desc
+--------------|----------
+(0 rows affected)
+
+SAFE REASON: Koi orphaned user nahi hai.
+
+VULNERABLE OUTPUT:
+database_user | type_desc
+--------------|----------
+old_admin     | SQL_USER
+
+VULNERABLE REASON: Orphaned user exist hai. Attacker same SID se login create kar sakta hai aur access regain kar sakta hai.
+
+================================================================
+COMMAND 25: LINKED SERVERS - LATERAL MOVEMENT
+================================================================
+
+SELECT s.name, s.is_rpc_out_enabled, s.is_data_access_enabled FROM sys.servers s WHERE s.is_linked = 1;
+
+SAFE OUTPUT:
+name | is_rpc_out_enabled | is_data_access_enabled
+-----|-------------------|------------------------
+(0 rows affected)
+
+SAFE REASON: Koi linked server nahi hai.
+
+VULNERABLE OUTPUT:
+name         | is_rpc_out_enabled | is_data_access_enabled
+-------------|-------------------|------------------------
+PROD_SERVER  | 1                 | 1
+
+VULNERABLE REASON: Linked server RPC out/data access ENABLED hai. Attacker remote server par commands execute kar sakta hai.
+
+================================================================
+COMMAND 26: LINKED SERVER LOGIN MAPPINGS - CREDENTIAL THEFT
+================================================================
+
+SELECT s.name AS linked_server, l.local_principal_id, l.uses_self_credential, l.remote_name FROM sys.linked_logins l JOIN sys.servers s ON l.server_id = s.server_id;
+
+SAFE OUTPUT:
+linked_server | local_principal_id | uses_self_credential | remote_name
+--------------|--------------------|---------------------|-------------
+(0 rows affected)
+
+SAFE REASON: Koi linked server login mapping nahi hai.
+
+VULNERABLE OUTPUT:
+linked_server | local_principal_id | uses_self_credential | remote_name
+--------------|--------------------|---------------------|-------------
+PROD_SERVER   | 1                  | 0                   | sa
+
+VULNERABLE REASON: Linked server mein credentials mapped hain. Attacker in credentials use karke remote server par access le sakta hai.
+
+================================================================
+COMMAND 27: SQL AGENT JOBS - COMMAND EXECUTION
+================================================================
+
+SELECT j.name AS job_name, js.subsystem, js.command FROM msdb.dbo.sysjobs j JOIN msdb.dbo.sysjobsteps js ON j.job_id = js.job_id WHERE j.enabled = 1 AND js.subsystem IN ('CmdExec', 'PowerShell');
+
+SAFE OUTPUT:
+job_name | subsystem | command
+---------|-----------|--------
+(0 rows affected)
+
+SAFE REASON: Koi job OS commands execute nahi karta.
+
+VULNERABLE OUTPUT:
+job_name   | subsystem | command
+-----------|-----------|--------
+Backup_Job | CmdExec   | xcopy /Y C:\Data D:\Backup
+
+VULNERABLE REASON: Job OS commands execute karta hai. Attacker job modify karke malicious commands execute kar sakta hai.
+
+================================================================
+COMMAND 28: SQL AGENT JOB OWNERS - PRIVILEGE ESCALATION
+================================================================
+
+SELECT j.name AS job_name, SUSER_SNAME(j.owner_sid) AS owner_name FROM msdb.dbo.sysjobs j WHERE j.enabled = 1;
+
+SAFE OUTPUT:
+job_name   | owner_name
+-----------|-----------
+Backup_Job | DOMAIN\svc_sql
+
+SAFE REASON: Jobs ke owners approved admin accounts hain.
+
+VULNERABLE OUTPUT:
+job_name   | owner_name
+-----------|-----------
+Admin_Job  | app_user
+
+VULNERABLE REASON: Low-privileged user high-privilege job ka owner hai. Ye user job modify karke malicious commands execute kar sakta hai.
+
+================================================================
+COMMAND 29: SQL AGENT PROXIES - PRIVILEGE ESCALATION
+================================================================
+
+SELECT p.name AS proxy_name, c.credential_identity FROM msdb.dbo.sysproxies p LEFT JOIN sys.credentials c ON p.credential_id = c.credential_id WHERE p.enabled = 1;
+
+SAFE OUTPUT:
+proxy_name | credential_identity
+-----------|--------------------
+(0 rows affected)
+
+SAFE REASON: Koi proxy nahi hai.
+
+VULNERABLE OUTPUT:
+proxy_name  | credential_identity
+------------|--------------------
+Admin_Proxy | DOMAIN\Administrator
+
+VULNERABLE REASON: High-privilege proxy exist hai. Attacker proxy use karke high privilege commands execute kar sakta hai.
+
+================================================================
+COMMAND 30: SQL AGENT PROXY ACCESS - KAUN USE KAR SAKTA HAI
+================================================================
+
+SELECT p.name AS proxy_name, pp.name AS principal_name FROM msdb.dbo.sysproxies p JOIN msdb.dbo.sysproxylogin pl ON p.proxy_id = pl.proxy_id JOIN sys.server_principals pp ON pl.principal_id = pp.principal_id WHERE p.enabled = 1;
+
+SAFE OUTPUT:
+proxy_name | principal_name
+-----------|---------------
+(0 rows affected)
+
+SAFE REASON: Kisi ko bhi proxy access nahi hai.
+
+VULNERABLE OUTPUT:
+proxy_name  | principal_name
+------------|---------------
+Admin_Proxy | app_user
+
+VULNERABLE REASON: Low-privileged user high-privilege proxy use kar sakta hai. Privilege escalation possible hai.
+
+================================================================
+COMMAND 31: EXTERNAL DATA SOURCES - DATA EXFIL
+================================================================
+
+SELECT name, type_desc, location FROM sys.external_data_sources;
+
+SAFE OUTPUT:
+name | type_desc | location
+-----|-----------|---------
+(0 rows affected)
+
+SAFE REASON: Koi external data source nahi hai.
+
+VULNERABLE OUTPUT:
+name            | type_desc | location
+----------------|-----------|---------
+AzureBlobSource | BLOB      | https://storage.blob.core.windows.net/
+
+VULNERABLE REASON: External data source exist hai. Attacker external table create karke data exfiltrate kar sakta hai.
+
+================================================================
+COMMAND 32: UNENCRYPTED CONNECTIONS - CREDENTIAL SNIFFING
+================================================================
+
+SELECT c.session_id, s.login_name, c.encrypt_option FROM sys.dm_exec_connections c JOIN sys.dm_exec_sessions s ON c.session_id = s.session_id WHERE c.net_transport = 'TCP' AND c.client_net_address != '127.0.0.1' AND c.encrypt_option = 0;
+
+SAFE OUTPUT:
+session_id | login_name | encrypt_option
+-----------|------------|---------------
+(0 rows affected)
+
+SAFE REASON: Sab remote connections encrypted hain.
+
+VULNERABLE OUTPUT:
+session_id | login_name | encrypt_option
+-----------|------------|---------------
+51         | app_user   | 0
+
+VULNERABLE REASON: Unencrypted connection exist hai. Attacker network sniff kar sakta hai aur credentials steal kar sakta hai.
+
+================================================================
+COMMAND 33: TCP ENDPOINTS - ATTACK SURFACE
+================================================================
+
+SELECT name, port, is_admin_endpoint FROM sys.tcp_endpoints WHERE state_desc = 'STARTED';
+
+SAFE OUTPUT:
+name             | port | is_admin_endpoint
+-----------------|------|------------------
+TSQL Default TCP | 1433 | 0
+
+SAFE REASON: Sirf default endpoint hai.
+
+VULNERABLE OUTPUT:
+name             | port | is_admin_endpoint
+-----------------|------|------------------
+Admin Endpoint   | 1434 | 1
+
+VULNERABLE REASON: Admin endpoint ENABLED hai. Attacker remote DAC access kar sakta hai.
+
+================================================================
+COMMAND 34: SERVICE ACCOUNT - PRIVILEGE ESCALATION
+================================================================
+
+SELECT servicename, startup_account FROM sys.dm_server_services;
+
+SAFE OUTPUT:
+servicename               | startup_account
+--------------------------|----------------
+SQL Server (MSSQLSERVER)  | DOMAIN\svc_sql
+
+SAFE REASON: Service account least privilege hai.
+
+VULNERABLE OUTPUT:
+servicename               | startup_account
+--------------------------|----------------
+SQL Server (MSSQLSERVER)  | DOMAIN\Administrator
+
+VULNERABLE REASON: Service account DOMAIN ADMIN hai. Attacker OS commands execute karke domain compromise kar sakta hai.
+
+================================================================
+COMMAND 35: AUDITING - DETECTION BYPASS
+================================================================
+
+SELECT name, status_desc FROM sys.server_audits;
+
+SAFE OUTPUT:
+name           | status_desc
+---------------|------------
+SQLServerAudit | STARTED
+
+SAFE REASON: Auditing enabled hai.
+
+VULNERABLE OUTPUT:
+name           | status_desc
+---------------|------------
+SQLServerAudit | NOT_STARTED
+
+VULNERABLE REASON: Auditing DISABLED hai. Attacker attacks bina detect kiye kar sakta hai.
+
+================================================================
+COMMAND 36: LOGIN AUDITING - DETECTION BYPASS
+================================================================
+
+SELECT name, value_in_use FROM sys.configurations WHERE name LIKE '%login%audit%' OR name = 'default trace enabled';
+
+SAFE OUTPUT:
+name                 | value_in_use
+---------------------|-------------
+default trace enabled | 1
+login audit level    | 2
+
+SAFE REASON: Login auditing enabled hai. Failed login attempts log ho rahe hain.
+
+VULNERABLE OUTPUT:
+name                 | value_in_use
+---------------------|-------------
+default trace enabled | 0
+login audit level    | 0
+
+VULNERABLE REASON: Login auditing DISABLED hai. Brute force attacks detect nahi honge.
+
+================================================================
+COMMAND 37: DATABASE ENCRYPTION - DATA AT REST
+================================================================
+
+SELECT DB_NAME(database_id) AS database_name, encryption_state, key_algorithm FROM sys.dm_database_encryption_keys WHERE encryption_state != 3;
+
+SAFE OUTPUT:
+database_name | encryption_state | key_algorithm
+--------------|------------------|--------------
+(0 rows affected)
+
+SAFE REASON: Sab sensitive databases encrypted hain.
+
+VULNERABLE OUTPUT:
+database_name | encryption_state | key_algorithm
+--------------|------------------|--------------
+SalesDB       | 1                | NULL
+
+VULNERABLE REASON: Database UNENCRYPTED hai. Data at rest vulnerable hai. Physical access pe data breach possible hai.
+
+================================================================
+COMMAND 38: DATABASE ENCRYPTION STATUS - ALL DBs
+================================================================
+
+SELECT DB_NAME(database_id) AS database_name, encryption_state, percent_complete, key_algorithm, key_length FROM sys.dm_database_encryption_keys;
+
+SAFE OUTPUT:
+database_name | encryption_state | percent_complete | key_algorithm | key_length
+--------------|------------------|------------------|---------------|-----------
+ProductionDB  | 3                | 100              | AES_256       | 256
+SalesDB       | 3                | 100              | AES_256       | 256
+
+SAFE REASON: Sab databases encrypted hain (encryption_state = 3 means fully encrypted).
+
+VULNERABLE OUTPUT:
+database_name | encryption_state | percent_complete | key_algorithm | key_length
+--------------|------------------|------------------|---------------|-----------
+ProductionDB  | 3                | 100              | AES_256       | 256
+SalesDB       | 1                | NULL             | NULL          | NULL
+
+VULNERABLE REASON: SalesDB UNENCRYPTED hai (encryption_state = 1). Data at rest vulnerable hai.
+
+================================================================
+COMMAND 39: SENSITIVE COLUMNS - DATA EXPOSURE
+================================================================
+
+SELECT SCHEMA_NAME(t.schema_id) AS schema_name, t.name AS table_name, c.name AS column_name, ty.name AS data_type FROM sys.tables t JOIN sys.columns c ON t.object_id = c.object_id JOIN sys.types ty ON c.user_type_id = ty.user_type_id WHERE c.name LIKE '%password%' OR c.name LIKE '%credit%' OR c.name LIKE '%ssn%' OR c.name LIKE '%apikey%' ORDER BY schema_name, table_name, column_name;
+
+SAFE OUTPUT:
+schema_name | table_name | column_name | data_type
+------------|------------|-------------|----------
+(0 rows affected)
+
+SAFE REASON: Koi sensitive column name nahi mila.
+
+VULNERABLE OUTPUT:
+schema_name | table_name | column_name | data_type
+------------|------------|-------------|----------
+dbo         | Users      | password    | nvarchar
+dbo         | Users      | creditcard  | nvarchar
+
+VULNERABLE REASON: Plaintext sensitive data storage hai. Passwords/CC/SSN plaintext mein store hain. Data breach risk hai.
+
+================================================================
+COMMAND 40: DATABASE MASTER KEY WEAKNESS
+================================================================
+
+SELECT name, key_length, algorithm_desc FROM sys.symmetric_keys WHERE name = '##MS_DatabaseMasterKey##';
+
+SAFE OUTPUT:
+name                         | key_length | algorithm_desc
+-----------------------------|------------|----------------
+##MS_DatabaseMasterKey##     | 256        | AES_256
+
+SAFE REASON: Strong encryption (AES-256) use ho rahi hai.
+
+VULNERABLE OUTPUT:
+name                         | key_length | algorithm_desc
+-----------------------------|------------|----------------
+##MS_DatabaseMasterKey##     | 128        | TRIPLE_DES_3KEY
+
+VULNERABLE REASON: Weak encryption (Triple DES) use ho rahi hai. Cryptographic attacks possible hain.
+
+================================================================
+COMMAND 41: CERTIFICATE WEAKNESS
+================================================================
+
+SELECT name, expiry_date, pvt_key_encryption_type_desc FROM sys.certificates WHERE expiry_date < GETDATE() OR pvt_key_encryption_type_desc = 'PW';
+
+SAFE OUTPUT:
+name | expiry_date | pvt_key_encryption_type_desc
+-----|-------------|----------------------------
+(0 rows affected)
+
+SAFE REASON: Sab certificates valid hain aur properly protected hain.
+
+VULNERABLE OUTPUT:
+name        | expiry_date | pvt_key_encryption_type_desc
+------------|-------------|----------------------------
+ExpiredCert | 2020-01-01  | MK
+
+VULNERABLE REASON: Certificate EXPIRED hai. Trust issues hain. Expired certificate use karna insecure hai.
+
+================================================================
+COMMAND 42: DATABASE OWNERSHIP - PRIVILEGE ESCALATION
+================================================================
+
+SELECT name AS database_name, SUSER_SNAME(owner_sid) AS owner_name FROM sys.databases WHERE SUSER_SNAME(owner_sid) NOT IN ('sa', 'DOMAIN\svc_sql', 'DOMAIN\admin') ORDER BY name;
+
+SAFE OUTPUT:
+database_name | owner_name
+--------------|-----------
+(0 rows affected)
+
+SAFE REASON: Sab databases ke owners approved admin accounts hain.
+
+VULNERABLE OUTPUT:
+database_name | owner_name
+--------------|-----------
+ProductionDB  | app_user
+
+VULNERABLE REASON: Low-privileged user database owner hai. Ye user TRUSTWORTHY exploit kar sakta hai aur sysadmin ban sakta hai.
+
+================================================================
+COMMAND 43: DEFAULT TRACE - DETECTION BYPASS
+================================================================
+
+SELECT name, value_in_use FROM sys.configurations WHERE name = 'default trace enabled';
+
+SAFE OUTPUT:
+name                 | value_in_use
+---------------------|-------------
+default trace enabled | 1
+
+SAFE REASON: Default trace enabled hai. Security events log ho rahe hain.
+
+VULNERABLE OUTPUT:
+name                 | value_in_use
+---------------------|-------------
+default trace enabled | 0
+
+VULNERABLE REASON: Default trace DISABLED hai. Security events log nahi ho rahe. Detection difficult hai.
+
+================================================================
+COMMAND 44: SQL SERVER VERSION - UNSUPPORTED BUILD
+================================================================
+
+SELECT @@SERVERNAME AS server_name, @@VERSION AS version_info, SERVERPROPERTY('ProductVersion') AS product_version, SERVERPROPERTY('ProductLevel') AS product_level, SERVERPROPERTY('Edition') AS edition;
+
+SAFE OUTPUT:
+server_name | version_info | product_version | product_level | edition
+------------|--------------|-----------------|---------------|--------
+SQLTEST01   | Microsoft SQL Server 2019 (RTM) ... | 15.0.4480.2 | RTM | Enterprise Edition
+
+SAFE REASON: Supported build and patch level matches client baseline.
+
+VULNERABLE OUTPUT:
+server_name | version_info | product_version | product_level | edition
+------------|--------------|-----------------|---------------|--------
+SQLTEST01   | Microsoft SQL Server 2008 R2 ... | 10.50.6000.34 | RTM | Enterprise Edition
+
+VULNERABLE REASON: Unsupported/EOL build hai. Security patches nahi mil rahe. Multiple known vulnerabilities exist.
+
+================================================================
+COMMAND 45: DATABASE STATE - OFFLINE/DANGLED DATABASES
+================================================================
+
+SELECT name, state_desc, user_access_desc, recovery_model_desc, is_read_only FROM sys.databases ORDER BY name;
+
+SAFE OUTPUT:
+name     | state_desc | user_access_desc | recovery_model_desc | is_read_only
+---------|------------|------------------|---------------------|-------------
+master   | ONLINE     | MULTI_USER       | SIMPLE              | 0
+msdb     | ONLINE     | MULTI_USER       | SIMPLE              | 0
+tempdb   | ONLINE     | MULTI_USER       | SIMPLE              | 0
+
+SAFE REASON: Sab databases online hain. Koi stale database nahi hai.
+
+VULNERABLE OUTPUT:
+name     | state_desc | user_access_desc | recovery_model_desc | is_read_only
+---------|------------|------------------|---------------------|-------------
+master   | ONLINE     | MULTI_USER       | SIMPLE              | 0
+OldDB    | OFFLINE    | MULTI_USER       | SIMPLE              | 0
+TestDB   | RECOVERING | SINGLE_USER      | FULL                | 0
+
+VULNERABLE REASON: Databases offline/recovering state mein hain. Attackers unused databases ko re-enable kar sakte hain ya unauthorized access le sakte hain.
+
+================================================================
+COMMAND 46: DATA TRANSFORMATION SERVICES (DTS) - EXECUTION
+================================================================
+
+SELECT name, value_in_use FROM sys.configurations WHERE name = 'allow updates';
+
+SAFE OUTPUT:
+name         | value_in_use
+-------------|-------------
+allow updates | 0
+
+SAFE REASON: DTS/allow updates disabled hai. System tables modify nahi kar sakte.
+
+VULNERABLE OUTPUT:
+name         | value_in_use
+-------------|-------------
+allow updates | 1
+
+VULNERABLE REASON: allow updates ENABLED hai (deprecated feature). Attacker system tables modify kar sakta hai. Privilege escalation possible hai.
+
+================================================================
+COMMAND 47: NESTED TRIGGERS - DOS ATTACK
+================================================================
+
+SELECT name, value_in_use FROM sys.configurations WHERE name = 'nested triggers';
+
+SAFE OUTPUT:
+name           | value_in_use
+---------------|-------------
+nested triggers | 1
+
+SAFE REASON: Nested triggers enabled hai (default). Normal behavior hai.
+
+VULNERABLE OUTPUT:
+name           | value_in_use
+---------------|-------------
+nested triggers | 0
+
+VULNERABLE REASON: Nested triggers DISABLED hai. Triggers ka chain execution block ho sakta hai. Application functionality break ho sakti hai.
+
+================================================================
+COMMAND 48: AUTO UPDATE STATISTICS - PERFORMANCE IMPACT
+================================================================
+
+SELECT name, value_in_use FROM sys.configurations WHERE name = 'auto update statistics';
+
+SAFE OUTPUT:
+name                  | value_in_use
+----------------------|-------------
+auto update statistics | 1
+
+SAFE REASON: Auto update statistics enabled hai. Performance optimal hai.
+
+VULNERABLE OUTPUT:
+name                  | value_in_use
+----------------------|-------------
+auto update statistics | 0
+
+VULNERABLE REASON: Auto update statistics DISABLED hai. Query performance degrade ho sakti hai. Stale statistics use hongi.
+
+================================================================
+COMMAND 49: CROSS DATABASE CHAINING SERVER LEVEL - EOP
+================================================================
+
+SELECT name, value_in_use FROM sys.configurations WHERE name = 'cross db ownership chaining';
+
+SAFE OUTPUT:
+name                       | value_in_use
+---------------------------|-------------
+cross db ownership chaining | 0
+
+SAFE REASON: Server-level cross DB chaining disabled hai.
+
+VULNERABLE OUTPUT:
+name                       | value_in_use
+---------------------------|-------------
+cross db ownership chaining | 1
+
+VULNERABLE REASON: Server-level cross DB chaining ENABLED hai. Attacker across all databases privilege escalation kar sakta hai. HIGH risk.
+
+================================================================
+COMMAND 50: FINAL ATTACKER SUMMARY - KAUN KYA KAR SAKTA HAI
+================================================================
+
+SELECT SUSER_SNAME() AS current_user, IS_SRVROLEMEMBER('sysadmin') AS is_sysadmin, HAS_PERMS_BY_NAME('xp_cmdshell', 'OBJECT', 'EXECUTE') AS can_xp_cmdshell, HAS_PERMS_BY_NAME('', 'SERVER', 'CREATE ASSEMBLY') AS can_clr, HAS_PERMS_BY_NAME('sp_OACreate', 'OBJECT', 'EXECUTE') AS can_ole, HAS_PERMS_BY_NAME('sa', 'LOGIN', 'IMPERSONATE') AS can_impersonate_sa, (SELECT COUNT(*) FROM sys.databases WHERE is_trustworthy_on = 1 AND HAS_PERMS_BY_NAME(name, 'DATABASE', 'CONTROL') = 1) AS can_exploit_trustworthy, (SELECT COUNT(*) FROM sys.servers WHERE is_linked = 1 AND HAS_PERMS_BY_NAME(name, 'SERVER', 'CONNECT') = 1) AS can_use_linked_servers, (SELECT COUNT(*) FROM sys.credentials) AS stored_credentials, CASE WHEN IS_SRVROLEMEMBER('sysadmin') = 1 THEN 'FULL SYSTEM ACCESS - CRITICAL' WHEN HAS_PERMS_BY_NAME('xp_cmdshell', 'OBJECT', 'EXECUTE') = 1 THEN 'Can execute OS commands - CRITICAL' WHEN HAS_PERMS_BY_NAME('sa', 'LOGIN', 'IMPERSONATE') = 1 THEN 'Can become sysadmin - CRITICAL' WHEN (SELECT COUNT(*) FROM sys.databases WHERE is_trustworthy_on = 1 AND HAS_PERMS_BY_NAME(name, 'DATABASE', 'CONTROL') = 1) > 0 THEN 'Can exploit TRUSTWORTHY - HIGH' WHEN HAS_PERMS_BY_NAME('', 'SERVER', 'CREATE ASSEMBLY') = 1 THEN 'Can execute CLR code - HIGH' WHEN HAS_PERMS_BY_NAME('sp_OACreate', 'OBJECT', 'EXECUTE') = 1 THEN 'Can use OLE Automation - HIGH' ELSE 'Limited access - Check specific permissions' END AS overall_risk;
+
+SAFE OUTPUT:
+current_user | is_sysadmin | can_xp_cmdshell | can_clr | can_ole | can_impersonate_sa | can_exploit_trustworthy | can_use_linked_servers | stored_credentials | overall_risk
+-------------|-------------|-----------------|---------|---------|-------------------|------------------------|----------------------|---------------------|-------------
+app_user     | 0           | 0               | 0       | 0       | 0                 | 0                      | 0                    | 0                   | Limited access - Check specific permissions
+
+SAFE REASON: Current user limited access hai. Koi critical vulnerability exploit nahi kar sakta.
+
+VULNERABLE OUTPUT:
+current_user | is_sysadmin | can_xp_cmdshell | can_clr | can_ole | can_impersonate_sa | can_exploit_trustworthy | can_use_linked_servers | stored_credentials | overall_risk
+-------------|-------------|-----------------|---------|---------|-------------------|------------------------|----------------------|---------------------|-------------
+app_user     | 0           | 1               | 1       | 1       | 1                 | 2                      | 2                    | 5                   | Can execute OS commands - CRITICAL
+
+VULNERABLE REASON: Current user multiple vulnerabilities exploit kar sakta hai. CRITICAL risk hai. Attacker OS commands execute kar sakta hai, sa impersonate kar sakta hai, TRUSTWORTHY exploit kar sakta hai.
+
+================================================================
+END OF COMPLETE SQL SERVER 2019 PENTEST COMMANDS
+TOTAL COMMANDS: 50
+ALL MISCONFIGURATIONS COVERED WITH SAFE/VULNERABLE OUTPUT & REASON
+================================================================
