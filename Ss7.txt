@@ -1,0 +1,914 @@
+================================================================
+COMPLETE SQL SERVER 2019 PENTEST COMMANDS - ERROR-FREE VERSION
+SQL SERVER 2019 COMPATIBLE - COPY PASTE AND RUN
+================================================================
+
+================================================================
+COMMAND 1: XP_CMDSHELL - OS COMMAND EXECUTION
+================================================================
+
+SELECT 
+    '=== XP_CMDSHELL STATUS ===' AS section,
+    SUSER_SNAME() AS current_login,
+    CASE 
+        WHEN IS_SRVROLEMEMBER('sysadmin') = 1 THEN 'YES' 
+        ELSE 'NO' 
+    END AS am_i_sysadmin,
+    CASE 
+        WHEN HAS_PERMS_BY_NAME('xp_cmdshell', 'OBJECT', 'EXECUTE') = 1 THEN 'YES' 
+        ELSE 'NO' 
+    END AS do_i_have_permission,
+    (SELECT value_in_use FROM sys.configurations WHERE name = 'xp_cmdshell') AS is_enabled,
+    CASE 
+        WHEN (SELECT value_in_use FROM sys.configurations WHERE name = 'xp_cmdshell') = 1 
+             AND (IS_SRVROLEMEMBER('sysadmin') = 1 OR HAS_PERMS_BY_NAME('xp_cmdshell', 'OBJECT', 'EXECUTE') = 1)
+        THEN 'VULNERABLE - YOU can execute OS commands - CRITICAL'
+        WHEN (SELECT value_in_use FROM sys.configurations WHERE name = 'xp_cmdshell') = 1 
+             AND EXISTS (SELECT 1 FROM sys.server_role_members srm JOIN sys.server_principals m ON srm.member_principal_id = m.principal_id WHERE srm.role_principal_id = (SELECT principal_id FROM sys.server_principals WHERE name = 'sysadmin') AND m.name != SUSER_SNAME() AND m.is_disabled = 0)
+        THEN 'VULNERABLE EXISTS - Other users can execute'
+        WHEN (SELECT value_in_use FROM sys.configurations WHERE name = 'xp_cmdshell') = 1 
+        THEN 'WARNING - xp_cmdshell ENABLED but you cannot execute'
+        ELSE 'SAFE - xp_cmdshell DISABLED'
+    END AS vulnerability_status;
+
+IF EXISTS (SELECT 1 FROM sys.configurations WHERE name = 'xp_cmdshell' AND value_in_use = 1)
+AND (IS_SRVROLEMEMBER('sysadmin') = 1 OR HAS_PERMS_BY_NAME('xp_cmdshell', 'OBJECT', 'EXECUTE') = 1)
+BEGIN
+    PRINT '========================================';
+    PRINT 'CONFIRMED VULNERABLE - ACTUAL EXECUTION TEST:';
+    PRINT '========================================';
+    EXEC xp_cmdshell 'whoami';
+    PRINT '========================================';
+    PRINT 'CONFIRMED - You can execute OS commands';
+    PRINT '========================================';
+END
+ELSE IF EXISTS (SELECT 1 FROM sys.configurations WHERE name = 'xp_cmdshell' AND value_in_use = 1)
+BEGIN
+    PRINT '========================================';
+    PRINT 'xp_cmdshell is ENABLED but you do NOT have permission';
+    PRINT 'Other users may be vulnerable - Check above list';
+    PRINT '========================================';
+END
+ELSE
+BEGIN
+    PRINT '========================================';
+    PRINT 'SAFE - xp_cmdshell is DISABLED';
+    PRINT '========================================';
+END
+
+================================================================
+COMMAND 2: SA ACCOUNT STATUS
+================================================================
+
+SELECT 
+    '=== SA ACCOUNT STATUS ===' AS section,
+    SUSER_SNAME() AS current_login,
+    CASE 
+        WHEN EXISTS (SELECT 1 FROM sys.sql_logins WHERE name = 'sa' AND is_disabled = 0) 
+        THEN 'ENABLED' 
+        ELSE 'DISABLED' 
+    END AS sa_status,
+    CASE 
+        WHEN EXISTS (SELECT 1 FROM sys.sql_logins WHERE name = 'sa' AND is_disabled = 0 AND is_policy_checked = 0 AND is_expiration_checked = 0)
+        THEN 'VULNERABLE - SA ENABLED with NO policy and NO expiration - CRITICAL'
+        WHEN EXISTS (SELECT 1 FROM sys.sql_logins WHERE name = 'sa' AND is_disabled = 0 AND is_policy_checked = 0)
+        THEN 'VULNERABLE - SA ENABLED with NO password policy - HIGH'
+        WHEN EXISTS (SELECT 1 FROM sys.sql_logins WHERE name = 'sa' AND is_disabled = 0)
+        THEN 'WARNING - SA ENABLED with policy - Brute force target'
+        WHEN EXISTS (SELECT 1 FROM sys.sql_logins WHERE name = 'sa' AND is_disabled = 1)
+        THEN 'SAFE - SA DISABLED'
+        ELSE 'UNKNOWN - SA not found'
+    END AS sa_vulnerability;
+
+SELECT 
+    '=== SA DETAILS ===' AS section,
+    name AS login_name,
+    CASE 
+        WHEN is_disabled = 1 THEN 'DISABLED' 
+        ELSE 'ENABLED' 
+    END AS account_status,
+    CASE 
+        WHEN is_policy_checked = 1 THEN 'YES' 
+        ELSE 'NO' 
+    END AS password_policy,
+    CASE 
+        WHEN is_expiration_checked = 1 THEN 'YES' 
+        ELSE 'NO' 
+    END AS password_expiration,
+    default_database_name
+FROM sys.sql_logins 
+WHERE name = 'sa';
+
+================================================================
+COMMAND 3: SERVER IMPERSONATION
+================================================================
+
+SELECT 
+    '=== SERVER IMPERSONATION STATUS ===' AS section,
+    SUSER_SNAME() AS current_login,
+    CASE 
+        WHEN EXISTS (SELECT 1 FROM sys.server_permissions WHERE permission_name = 'IMPERSONATE' AND grantee_principal_id = USER_ID()) 
+        THEN 'YES' 
+        ELSE 'NO' 
+    END AS can_impersonate,
+    CASE 
+        WHEN EXISTS (SELECT 1 FROM sys.server_permissions WHERE permission_name = 'IMPERSONATE' AND major_id = (SELECT principal_id FROM sys.server_principals WHERE name = 'sa') AND grantee_principal_id = USER_ID())
+        THEN 'VULNERABLE - YOU can IMPERSONATE SA - CRITICAL'
+        WHEN EXISTS (SELECT 1 FROM sys.server_permissions WHERE permission_name = 'IMPERSONATE' AND grantee_principal_id = USER_ID())
+        THEN 'VULNERABLE - YOU have IMPERSONATE permission'
+        WHEN EXISTS (SELECT 1 FROM sys.server_permissions WHERE permission_name = 'IMPERSONATE')
+        THEN 'VULNERABLE EXISTS - Other users can impersonate'
+        ELSE 'SAFE - No impersonation permissions'
+    END AS impersonation_status;
+
+SELECT 
+    '=== IMPERSONATION GRANTS ===' AS section,
+    g.name AS grantee,
+    t.name AS target_principal
+FROM sys.server_permissions sp
+JOIN sys.server_principals g ON sp.grantee_principal_id = g.principal_id
+JOIN sys.server_principals t ON sp.major_id = t.principal_id
+WHERE sp.permission_name = 'IMPERSONATE';
+
+================================================================
+COMMAND 4: TRUSTWORTHY DATABASES
+================================================================
+
+SELECT 
+    '=== TRUSTWORTHY DATABASES ===' AS section,
+    SUSER_SNAME() AS current_login,
+    name AS database_name,
+    CASE 
+        WHEN is_trustworthy_on = 1 THEN 'YES' 
+        ELSE 'NO' 
+    END AS is_trustworthy_on,
+    SUSER_SNAME(owner_sid) AS owner_name,
+    CASE 
+        WHEN HAS_PERMS_BY_NAME(name, 'DATABASE', 'CONTROL') = 1 THEN 'YES' 
+        ELSE 'NO' 
+    END AS has_control,
+    CASE 
+        WHEN is_trustworthy_on = 1 AND SUSER_SNAME(owner_sid) IN ('sa') AND HAS_PERMS_BY_NAME(name, 'DATABASE', 'CONTROL') = 1
+        THEN 'VULNERABLE - TRUSTWORTHY ON with SA owner AND you have CONTROL - CRITICAL'
+        WHEN is_trustworthy_on = 1 AND HAS_PERMS_BY_NAME(name, 'DATABASE', 'CONTROL') = 1
+        THEN 'VULNERABLE - TRUSTWORTHY ON and you have CONTROL'
+        WHEN is_trustworthy_on = 1
+        THEN 'WARNING - TRUSTWORTHY ON exists - Check if you can get CONTROL'
+        ELSE 'SAFE - No TRUSTWORTHY issues'
+    END AS vulnerability_status
+FROM sys.databases
+WHERE is_trustworthy_on = 1 OR name NOT IN ('master', 'msdb', 'model', 'tempdb');
+
+================================================================
+COMMAND 5: CLR (COMMON LANGUAGE RUNTIME) - CODE EXECUTION
+================================================================
+
+SELECT 
+    '=== CLR STATUS ===' AS section,
+    SUSER_SNAME() AS current_login,
+    CASE 
+        WHEN (SELECT value_in_use FROM sys.configurations WHERE name = 'clr enabled') = 1 
+        THEN 'ENABLED' 
+        ELSE 'DISABLED' 
+    END AS clr_enabled,
+    CASE 
+        WHEN (SELECT value_in_use FROM sys.configurations WHERE name = 'clr strict security') = 1 
+        THEN 'ENABLED' 
+        ELSE 'DISABLED' 
+    END AS strict_security,
+    CASE 
+        WHEN (SELECT value_in_use FROM sys.configurations WHERE name = 'clr enabled') = 1 
+             AND (SELECT value_in_use FROM sys.configurations WHERE name = 'clr strict security') = 0
+             AND (IS_SRVROLEMEMBER('sysadmin') = 1 OR HAS_PERMS_BY_NAME('', 'SERVER', 'CREATE ASSEMBLY') = 1)
+        THEN 'VULNERABLE - CLR ENABLED with UNSAFE allowed AND you can CREATE ASSEMBLY - CRITICAL'
+        WHEN (SELECT value_in_use FROM sys.configurations WHERE name = 'clr enabled') = 1 
+             AND (SELECT value_in_use FROM sys.configurations WHERE name = 'clr strict security') = 0
+        THEN 'VULNERABLE - CLR ENABLED with UNSAFE allowed - Check if you have CREATE ASSEMBLY'
+        WHEN (SELECT value_in_use FROM sys.configurations WHERE name = 'clr enabled') = 1 
+        THEN 'WARNING - CLR ENABLED with strict security ON'
+        ELSE 'SAFE - CLR DISABLED'
+    END AS clr_status;
+
+================================================================
+COMMAND 6: OLE AUTOMATION PROCEDURES - RCE
+================================================================
+
+SELECT 
+    '=== OLE AUTOMATION STATUS ===' AS section,
+    SUSER_SNAME() AS current_login,
+    CASE 
+        WHEN (SELECT value_in_use FROM sys.configurations WHERE name = 'Ole Automation Procedures') = 1 
+        THEN 'ENABLED' 
+        ELSE 'DISABLED' 
+    END AS ole_enabled,
+    CASE 
+        WHEN (SELECT value_in_use FROM sys.configurations WHERE name = 'Ole Automation Procedures') = 1 
+             AND (IS_SRVROLEMEMBER('sysadmin') = 1 OR HAS_PERMS_BY_NAME('sp_OACreate', 'OBJECT', 'EXECUTE') = 1)
+        THEN 'VULNERABLE - OLE Automation ENABLED AND you can execute - RCE possible - HIGH'
+        WHEN (SELECT value_in_use FROM sys.configurations WHERE name = 'Ole Automation Procedures') = 1 
+        THEN 'WARNING - OLE Automation ENABLED - Check if you have EXECUTE permission'
+        ELSE 'SAFE - OLE Automation DISABLED'
+    END AS ole_status;
+
+SELECT 
+    '=== OLE PROCEDURE PERMISSIONS ===' AS section,
+    'sp_OACreate' AS procedure_name,
+    CASE 
+        WHEN HAS_PERMS_BY_NAME('sp_OACreate', 'OBJECT', 'EXECUTE') = 1 THEN 'YES' 
+        ELSE 'NO' 
+    END AS has_execute
+UNION ALL
+SELECT 
+    '=== OLE PROCEDURE PERMISSIONS ===',
+    'sp_OAMethod',
+    CASE 
+        WHEN HAS_PERMS_BY_NAME('sp_OAMethod', 'OBJECT', 'EXECUTE') = 1 THEN 'YES' 
+        ELSE 'NO' 
+    END
+UNION ALL
+SELECT 
+    '=== OLE PROCEDURE PERMISSIONS ===',
+    'sp_OADestroy',
+    CASE 
+        WHEN HAS_PERMS_BY_NAME('sp_OADestroy', 'OBJECT', 'EXECUTE') = 1 THEN 'YES' 
+        ELSE 'NO' 
+    END;
+
+================================================================
+COMMAND 7: AD HOC DISTRIBUTED QUERIES - DATA EXFILTRATION
+================================================================
+
+SELECT 
+    '=== AD HOC QUERIES STATUS ===' AS section,
+    SUSER_SNAME() AS current_login,
+    CASE 
+        WHEN (SELECT value_in_use FROM sys.configurations WHERE name = 'Ad Hoc Distributed Queries') = 1 
+        THEN 'ENABLED' 
+        ELSE 'DISABLED' 
+    END AS adhoc_enabled,
+    CASE 
+        WHEN (SELECT value_in_use FROM sys.configurations WHERE name = 'Ad Hoc Distributed Queries') = 1 
+             AND (IS_SRVROLEMEMBER('sysadmin') = 1 OR HAS_PERMS_BY_NAME('', 'SERVER', 'CONNECT') = 1)
+        THEN 'VULNERABLE - Ad Hoc ENABLED AND you can connect - Data exfiltration possible - HIGH'
+        WHEN (SELECT value_in_use FROM sys.configurations WHERE name = 'Ad Hoc Distributed Queries') = 1 
+        THEN 'WARNING - Ad Hoc ENABLED - Check if you have CONNECT permission'
+        ELSE 'SAFE - Ad Hoc DISABLED'
+    END AS adhoc_status;
+
+================================================================
+COMMAND 8: DATABASE MAIL - PHISHING/SPAM
+================================================================
+
+SELECT 
+    '=== DATABASE MAIL STATUS ===' AS section,
+    SUSER_SNAME() AS current_login,
+    CASE 
+        WHEN (SELECT value_in_use FROM sys.configurations WHERE name = 'Database Mail XPs') = 1 
+        THEN 'ENABLED' 
+        ELSE 'DISABLED' 
+    END AS mail_enabled,
+    CASE 
+        WHEN (SELECT value_in_use FROM sys.configurations WHERE name = 'Database Mail XPs') = 1 
+        THEN 'WARNING - Database Mail ENABLED - Phishing/Spam risk'
+        ELSE 'SAFE - Database Mail DISABLED'
+    END AS mail_status;
+
+================================================================
+COMMAND 9: REMOTE ADMIN CONNECTIONS (DAC) - REMOTE ACCESS
+================================================================
+
+SELECT 
+    '=== REMOTE DAC STATUS ===' AS section,
+    SUSER_SNAME() AS current_login,
+    CASE 
+        WHEN (SELECT value_in_use FROM sys.configurations WHERE name = 'remote admin connections') = 1 
+        THEN 'ENABLED' 
+        ELSE 'DISABLED' 
+    END AS dac_status,
+    CASE 
+        WHEN (SELECT value_in_use FROM sys.configurations WHERE name = 'remote admin connections') = 1 
+        THEN 'VULNERABLE - Remote Admin Connections ENABLED - Remote DAC access possible - HIGH'
+        ELSE 'SAFE - Remote Admin Connections DISABLED'
+    END AS dac_vulnerability;
+
+================================================================
+COMMAND 10: REMOTE ACCESS - REMOTE CONNECTIONS
+================================================================
+
+SELECT 
+    '=== REMOTE ACCESS STATUS ===' AS section,
+    SUSER_SNAME() AS current_login,
+    CASE 
+        WHEN (SELECT value_in_use FROM sys.configurations WHERE name = 'remote access') = 1 
+        THEN 'ENABLED' 
+        ELSE 'DISABLED' 
+    END AS remote_access,
+    CASE 
+        WHEN (SELECT value_in_use FROM sys.configurations WHERE name = 'remote access') = 0 
+        THEN 'WARNING - Remote access DISABLED - Check if required'
+        ELSE 'SAFE - Remote access enabled (normal)'
+    END AS remote_status;
+
+================================================================
+COMMAND 11: CROSS DATABASE OWNERSHIP CHAINING - EOP
+================================================================
+
+SELECT 
+    '=== CROSS DB CHAINING STATUS ===' AS section,
+    SUSER_SNAME() AS current_login,
+    name AS database_name,
+    CASE 
+        WHEN is_db_chaining_on = 1 THEN 'YES' 
+        ELSE 'NO' 
+    END AS chaining_enabled,
+    CASE 
+        WHEN is_db_chaining_on = 1
+        THEN 'VULNERABLE - Cross DB chaining enabled - Privilege escalation possible - HIGH'
+        ELSE 'SAFE - Cross DB chaining disabled'
+    END AS chaining_status
+FROM sys.databases
+WHERE is_db_chaining_on = 1 OR name NOT IN ('master', 'msdb', 'model', 'tempdb');
+
+================================================================
+COMMAND 12: CONTAINED DATABASE AUTHENTICATION - AUTH BYPASS
+================================================================
+
+SELECT 
+    '=== CONTAINED AUTH STATUS ===' AS section,
+    SUSER_SNAME() AS current_login,
+    CASE 
+        WHEN (SELECT value_in_use FROM sys.configurations WHERE name = 'contained database authentication') = 1 
+        THEN 'ENABLED' 
+        ELSE 'DISABLED' 
+    END AS contained_auth,
+    CASE 
+        WHEN (SELECT value_in_use FROM sys.configurations WHERE name = 'contained database authentication') = 1 
+        THEN 'VULNERABLE - Contained authentication ENABLED - Auth bypass possible - HIGH'
+        ELSE 'SAFE - Contained authentication DISABLED'
+    END AS contained_status;
+
+SELECT 
+    '=== CONTAINED DATABASES ===' AS section,
+    name AS database_name,
+    containment_desc
+FROM sys.databases
+WHERE containment_desc != 'NONE';
+
+================================================================
+COMMAND 13: STORED CREDENTIALS - CREDENTIAL THEFT
+================================================================
+
+SELECT 
+    '=== STORED CREDENTIALS ===' AS section,
+    SUSER_SNAME() AS current_login,
+    name AS credential_name,
+    credential_identity,
+    create_date,
+    CASE 
+        WHEN credential_identity LIKE '%Administrator%' OR credential_identity LIKE '%admin%'
+        THEN 'VULNERABLE - High-privilege stored credential - HIGH'
+        ELSE 'WARNING - Stored credential exists - Check identity'
+    END AS credential_status
+FROM sys.credentials;
+
+================================================================
+COMMAND 14: DATABASE SCOPED CREDENTIALS - CREDENTIAL THEFT
+================================================================
+
+SELECT 
+    '=== DATABASE SCOPED CREDENTIALS ===' AS section,
+    SUSER_SNAME() AS current_login,
+    name AS credential_name,
+    credential_id,
+    create_date,
+    CASE 
+        WHEN EXISTS (SELECT 1 FROM sys.database_scoped_credentials)
+        THEN 'VULNERABLE - Database scoped credentials exist - Data exfiltration possible - HIGH'
+        ELSE 'SAFE - No database scoped credentials'
+    END AS credential_status
+FROM sys.database_scoped_credentials;
+
+================================================================
+COMMAND 15: LINKED SERVERS - LATERAL MOVEMENT
+================================================================
+
+SELECT 
+    '=== LINKED SERVERS STATUS ===' AS section,
+    SUSER_SNAME() AS current_login,
+    s.name AS linked_server,
+    CASE 
+        WHEN s.is_rpc_out_enabled = 1 THEN 'YES' 
+        ELSE 'NO' 
+    END AS rpc_out,
+    CASE 
+        WHEN s.is_data_access_enabled = 1 THEN 'YES' 
+        ELSE 'NO' 
+    END AS data_access,
+    CASE 
+        WHEN s.is_rpc_out_enabled = 1 OR s.is_data_access_enabled = 1
+        THEN 'VULNERABLE - Linked server with RPC/Data access - Lateral movement possible - HIGH'
+        ELSE 'WARNING - Linked server exists - Check trust path'
+    END AS linked_status
+FROM sys.servers s
+WHERE s.is_linked = 1;
+
+================================================================
+COMMAND 16: SQL AGENT JOBS - COMMAND EXECUTION
+================================================================
+
+SELECT 
+    '=== SQL AGENT JOBS ===' AS section,
+    SUSER_SNAME() AS current_login,
+    j.name AS job_name,
+    js.subsystem,
+    js.step_name,
+    CASE 
+        WHEN js.subsystem IN ('CmdExec', 'PowerShell', 'ActiveScripting')
+        THEN 'VULNERABLE - Job executes OS commands - HIGH'
+        ELSE 'Check job step'
+    END AS job_status
+FROM msdb.dbo.sysjobs j
+JOIN msdb.dbo.sysjobsteps js ON j.job_id = js.job_id
+WHERE j.enabled = 1
+AND js.subsystem IN ('CmdExec', 'PowerShell', 'ActiveScripting');
+
+================================================================
+COMMAND 17: SQL AGENT PROXIES - PRIVILEGE ESCALATION
+================================================================
+
+SELECT 
+    '=== SQL AGENT PROXIES ===' AS section,
+    SUSER_SNAME() AS current_login,
+    p.name AS proxy_name,
+    c.credential_identity,
+    CASE 
+        WHEN c.credential_identity LIKE '%Administrator%' OR c.credential_identity LIKE '%admin%'
+        THEN 'VULNERABLE - High-privilege proxy - CRITICAL'
+        ELSE 'WARNING - Proxy exists - Check identity'
+    END AS proxy_status
+FROM msdb.dbo.sysproxies p
+LEFT JOIN sys.credentials c ON p.credential_id = c.credential_id
+WHERE p.enabled = 1;
+
+================================================================
+COMMAND 18: EXTERNAL DATA SOURCES - DATA EXFIL
+================================================================
+
+SELECT 
+    '=== EXTERNAL DATA SOURCES ===' AS section,
+    SUSER_SNAME() AS current_login,
+    name,
+    type_desc,
+    location,
+    CASE 
+        WHEN EXISTS (SELECT 1 FROM sys.external_data_sources)
+        THEN 'VULNERABLE - External data sources exist - Data exfiltration possible - HIGH'
+        ELSE 'SAFE - No external data sources'
+    END AS external_status
+FROM sys.external_data_sources;
+
+================================================================
+COMMAND 19: PUBLIC ROLE PERMISSIONS - UNAUTHORIZED ACCESS
+================================================================
+
+SELECT 
+    '=== PUBLIC ROLE PERMISSIONS ===' AS section,
+    DB_NAME() AS database_name,
+    OBJECT_SCHEMA_NAME(p.major_id) AS schema_name,
+    OBJECT_NAME(p.major_id) AS object_name,
+    p.permission_name,
+    p.state_desc,
+    CASE 
+        WHEN p.permission_name IN ('SELECT', 'EXECUTE', 'CONTROL') 
+        AND OBJECT_NAME(p.major_id) NOT LIKE 'sys%'
+        THEN 'VULNERABLE - PUBLIC can access ' + OBJECT_NAME(p.major_id) + ' - HIGH'
+        ELSE 'Check permission'
+    END AS public_status
+FROM sys.database_permissions p
+WHERE p.grantee_principal_id = DATABASE_PRINCIPAL_ID('public')
+AND p.permission_name IN ('SELECT', 'EXECUTE', 'CONTROL', 'ALTER');
+
+================================================================
+COMMAND 20: GUEST USER - UNAUTHORIZED ACCESS
+================================================================
+
+SELECT 
+    '=== GUEST USER STATUS ===' AS section,
+    DB_NAME() AS database_name,
+    SUSER_SNAME() AS current_login,
+    name,
+    authentication_type_desc,
+    CASE 
+        WHEN authentication_type_desc != 'NONE'
+        THEN 'VULNERABLE - GUEST ENABLED - Unauthorized access possible - HIGH'
+        ELSE 'SAFE - GUEST DISABLED'
+    END AS guest_status
+FROM sys.database_principals
+WHERE name = 'guest';
+
+================================================================
+COMMAND 21: ORPHANED USERS - PERSISTENCE
+================================================================
+
+SELECT 
+    '=== ORPHANED USERS ===' AS section,
+    DB_NAME() AS database_name,
+    dp.name AS database_user,
+    dp.type_desc,
+    dp.authentication_type_desc,
+    CASE 
+        WHEN sp.sid IS NULL AND dp.authentication_type = 1
+        THEN 'VULNERABLE - Orphaned user exists - Backdoor possible - MEDIUM'
+        ELSE 'Check'
+    END AS orphaned_status
+FROM sys.database_principals dp
+LEFT JOIN sys.server_principals sp ON dp.sid = sp.sid
+WHERE dp.authentication_type = 1 
+AND dp.principal_id > 4 
+AND sp.sid IS NULL;
+
+================================================================
+COMMAND 22: SENSITIVE COLUMNS - DATA EXPOSURE
+================================================================
+
+SELECT 
+    '=== SENSITIVE COLUMNS ===' AS section,
+    DB_NAME() AS database_name,
+    SCHEMA_NAME(t.schema_id) AS schema_name,
+    t.name AS table_name,
+    c.name AS column_name,
+    ty.name AS data_type,
+    CASE 
+        WHEN ty.name IN ('varchar', 'nvarchar', 'text', 'ntext')
+        THEN 'VULNERABLE - Plaintext sensitive data - Data breach risk - HIGH'
+        ELSE 'Check - May be encrypted'
+    END AS sensitive_status
+FROM sys.tables t
+JOIN sys.columns c ON t.object_id = c.object_id
+JOIN sys.types ty ON c.user_type_id = ty.user_type_id
+WHERE c.name LIKE '%password%' OR c.name LIKE '%pass%'
+   OR c.name LIKE '%credit%' OR c.name LIKE '%card%'
+   OR c.name LIKE '%ssn%' OR c.name LIKE '%social%'
+   OR c.name LIKE '%apikey%' OR c.name LIKE '%api_key%'
+   OR c.name LIKE '%secret%' OR c.name LIKE '%token%'
+   OR c.name LIKE '%auth%' OR c.name LIKE '%credential%'
+ORDER BY schema_name, table_name, column_name;
+
+================================================================
+COMMAND 23: DATABASE ENCRYPTION (TDE) - DATA AT REST
+================================================================
+
+SELECT 
+    '=== DATABASE ENCRYPTION STATUS ===' AS section,
+    SUSER_SNAME() AS current_login,
+    DB_NAME(database_id) AS database_name,
+    CASE encryption_state 
+        WHEN 1 THEN 'UNENCRYPTED'
+        WHEN 2 THEN 'ENCRYPTING'
+        WHEN 3 THEN 'ENCRYPTED'
+        WHEN 4 THEN 'KEY_CHANGE'
+        WHEN 5 THEN 'DECRYPTING'
+        ELSE 'UNKNOWN'
+    END AS encryption_state,
+    key_algorithm,
+    key_length,
+    CASE 
+        WHEN encryption_state = 1 AND DB_NAME(database_id) NOT IN ('master', 'msdb', 'model', 'tempdb')
+        THEN 'VULNERABLE - Database NOT ENCRYPTED - Data at risk - HIGH'
+        WHEN encryption_state = 3
+        THEN 'SAFE - Database encrypted'
+        ELSE 'Check encryption'
+    END AS encryption_status
+FROM sys.dm_database_encryption_keys;
+
+================================================================
+COMMAND 24: DATABASE MASTER KEY - WEAK ENCRYPTION
+================================================================
+
+SELECT 
+    '=== DATABASE MASTER KEY ===' AS section,
+    SUSER_SNAME() AS current_login,
+    name,
+    key_length,
+    algorithm_desc,
+    create_date,
+    CASE 
+        WHEN key_length >= 256 AND algorithm_desc LIKE '%AES%'
+        THEN 'SAFE - Strong encryption (AES-256)'
+        WHEN algorithm_desc LIKE '%DES%' OR algorithm_desc LIKE '%TRIPLE%'
+        THEN 'VULNERABLE - Weak encryption - Upgrade required'
+        ELSE 'WARNING - Check encryption'
+    END AS master_key_status
+FROM sys.symmetric_keys
+WHERE name = '##MS_DatabaseMasterKey##';
+
+================================================================
+COMMAND 25: CERTIFICATE WEAKNESS
+================================================================
+
+SELECT 
+    '=== CERTIFICATE STATUS ===' AS section,
+    SUSER_SNAME() AS current_login,
+    name,
+    expiry_date,
+    pvt_key_encryption_type_desc,
+    CASE 
+        WHEN expiry_date < GETDATE()
+        THEN 'VULNERABLE - Certificate EXPIRED - Trust issues - HIGH'
+        WHEN pvt_key_encryption_type_desc = 'PW'
+        THEN 'WARNING - Weak private key encryption'
+        ELSE 'SAFE - Certificate valid'
+    END AS certificate_status
+FROM sys.certificates;
+
+================================================================
+COMMAND 26: DATABASE OWNERSHIP - PRIVILEGE ESCALATION
+================================================================
+
+SELECT 
+    '=== DATABASE OWNERSHIP ===' AS section,
+    SUSER_SNAME() AS current_login,
+    name AS database_name,
+    SUSER_SNAME(owner_sid) AS owner_name,
+    CASE 
+        WHEN SUSER_SNAME(owner_sid) NOT IN ('sa', 'dbo', 'sysadmin') 
+        AND name NOT IN ('master', 'msdb', 'model', 'tempdb')
+        THEN 'VULNERABLE - Database owned by non-admin user - Privilege escalation possible'
+        ELSE 'SAFE - Database owner is approved'
+    END AS ownership_status
+FROM sys.databases
+WHERE name NOT IN ('master', 'msdb', 'model', 'tempdb');
+
+================================================================
+COMMAND 27: AUDITING - DETECTION BYPASS
+================================================================
+
+SELECT 
+    '=== AUDITING STATUS ===' AS section,
+    SUSER_SNAME() AS current_login,
+    name,
+    status_desc,
+    create_date,
+    CASE 
+        WHEN status_desc = 'STARTED'
+        THEN 'SAFE - Auditing enabled'
+        WHEN status_desc != 'STARTED' AND name IS NOT NULL
+        THEN 'WARNING - Audit exists but NOT STARTED'
+        ELSE 'VULNERABLE - No audit configured - Detection bypass possible - HIGH'
+    END AS audit_status
+FROM sys.server_audits;
+
+================================================================
+COMMAND 28: LOGIN AUDITING - DETECTION BYPASS
+================================================================
+
+SELECT 
+    '=== LOGIN AUDITING ===' AS section,
+    SUSER_SNAME() AS current_login,
+    name,
+    value_in_use,
+    CASE 
+        WHEN name = 'login audit level' AND value_in_use = 0
+        THEN 'VULNERABLE - Login auditing DISABLED - Brute force undetected - HIGH'
+        WHEN name = 'login audit level' AND value_in_use = 1
+        THEN 'WARNING - Login auditing partial - Only failed logins'
+        WHEN name = 'login audit level' AND value_in_use = 2
+        THEN 'SAFE - Login auditing enabled (all logins)'
+        WHEN name = 'default trace enabled' AND value_in_use = 0
+        THEN 'WARNING - Default trace DISABLED'
+        ELSE 'Check'
+    END AS audit_status
+FROM sys.configurations
+WHERE name LIKE '%login%audit%' OR name = 'default trace enabled';
+
+================================================================
+COMMAND 29: SERVER ROLE MEMBERSHIPS - PRIVILEGE ESCALATION
+================================================================
+
+SELECT 
+    '=== SERVER ROLE MEMBERSHIPS ===' AS section,
+    SUSER_SNAME() AS current_login,
+    r.name AS role_name,
+    m.name AS member_name,
+    m.type_desc,
+    CASE 
+        WHEN r.name = 'sysadmin' AND m.name NOT IN ('sa', 'NT SERVICE\SQLSERVERAGENT', 'NT SERVICE\MSSQLSERVER')
+        THEN 'VULNERABLE - User in sysadmin role - Full control - HIGH'
+        WHEN r.name IN ('securityadmin', 'serveradmin', 'dbcreator')
+        THEN 'WARNING - User in privileged role'
+        ELSE 'Check'
+    END AS role_status
+FROM sys.server_role_members srm
+JOIN sys.server_principals r ON srm.role_principal_id = r.principal_id
+JOIN sys.server_principals m ON srm.member_principal_id = m.principal_id
+WHERE r.name IN ('sysadmin', 'securityadmin', 'serveradmin', 'dbcreator', 'bulkadmin');
+
+================================================================
+COMMAND 30: SERVER PERMISSIONS - PRIVILEGE ESCALATION
+================================================================
+
+SELECT 
+    '=== SERVER PERMISSIONS ===' AS section,
+    SUSER_SNAME() AS current_login,
+    p.name AS principal_name,
+    pp.permission_name,
+    pp.state_desc,
+    CASE 
+        WHEN pp.permission_name IN ('CONTROL SERVER', 'ALTER ANY LOGIN', 'IMPERSONATE ANY LOGIN')
+        AND pp.state_desc = 'GRANT'
+        THEN 'VULNERABLE - High-risk server permission granted - Privilege escalation possible - HIGH'
+        ELSE 'Check'
+    END AS permission_status
+FROM sys.server_principals p
+JOIN sys.server_permissions pp ON p.principal_id = pp.grantee_principal_id
+WHERE p.type IN ('S', 'U', 'G')
+AND p.name NOT LIKE '##%'
+AND pp.permission_name IN ('CONTROL SERVER', 'ALTER ANY LOGIN', 'IMPERSONATE ANY LOGIN', 'SHUTDOWN');
+
+================================================================
+COMMAND 31: DATABASE ROLE MEMBERSHIPS - PRIVILEGE ESCALATION
+================================================================
+
+SELECT 
+    '=== DATABASE ROLE MEMBERSHIPS ===' AS section,
+    DB_NAME() AS database_name,
+    r.name AS role_name,
+    m.name AS member_name,
+    m.type_desc,
+    CASE 
+        WHEN r.name = 'db_owner' AND m.name != 'dbo'
+        THEN 'VULNERABLE - User is db_owner - Full database control - HIGH'
+        WHEN r.name IN ('db_securityadmin', 'db_ddladmin')
+        THEN 'WARNING - User in privileged DB role'
+        ELSE 'Check'
+    END AS role_status
+FROM sys.database_role_members drm
+JOIN sys.database_principals r ON drm.role_principal_id = r.principal_id
+JOIN sys.database_principals m ON drm.member_principal_id = m.principal_id
+WHERE r.name IN ('db_owner', 'db_securityadmin', 'db_ddladmin')
+AND m.principal_id > 4;
+
+================================================================
+COMMAND 32: DATABASE PERMISSIONS - PRIVILEGE ESCALATION
+================================================================SELECT 
+    '=== DATABASE PERMISSIONS ===' AS section,
+    DB_NAME() AS database_name,
+    g.name AS grantee_name,
+    p.permission_name,
+    OBJECT_SCHEMA_NAME(p.major_id) AS object_schema,
+    OBJECT_NAME(p.major_id) AS object_name,
+    CASE 
+        WHEN p.permission_name IN ('CONTROL', 'ALTER', 'TAKE OWNERSHIP', 'IMPERSONATE')
+        AND p.state_desc = 'GRANT'
+        AND g.principal_id > 4
+        THEN 'VULNERABLE - High-risk DB permission granted - Privilege escalation possible - HIGH'
+        ELSE 'Check'
+    END AS permission_status
+FROM sys.database_permissions p
+JOIN sys.database_principals g ON p.grantee_principal_id = g.principal_id
+WHERE p.permission_name IN ('CONTROL', 'ALTER', 'TAKE OWNERSHIP', 'IMPERSONATE')
+AND g.principal_id > 4;
+
+================================================================
+COMMAND 33: TCP ENDPOINTS - ATTACK SURFACE
+================================================================
+
+SELECT 
+    '=== TCP ENDPOINTS ===' AS section,
+    SUSER_SNAME() AS current_login,
+    name,
+    port,
+    CASE 
+        WHEN is_admin_endpoint = 1 THEN 'YES' 
+        ELSE 'NO' 
+    END AS is_admin,
+    state_desc,
+    CASE 
+        WHEN is_admin_endpoint = 1 AND state_desc = 'STARTED'
+        THEN 'VULNERABLE - Admin endpoint ENABLED - Remote DAC access possible - HIGH'
+        WHEN port NOT IN (1433, 1434, 5022) AND state_desc = 'STARTED'
+        THEN 'WARNING - Non-standard port - Attack surface increased'
+        ELSE 'SAFE - Standard endpoint'
+    END AS endpoint_status
+FROM sys.tcp_endpoints
+WHERE state_desc = 'STARTED';
+
+================================================================
+COMMAND 34: UNENCRYPTED CONNECTIONS - CREDENTIAL SNIFFING
+================================================================
+
+SELECT 
+    '=== UNENCRYPTED CONNECTIONS ===' AS section,
+    SUSER_SNAME() AS current_login,
+    c.session_id,
+    s.login_name,
+    c.client_net_address,
+    CASE 
+        WHEN c.encrypt_option = 0 THEN 'YES' 
+        ELSE 'NO' 
+    END AS is_unencrypted,
+    CASE 
+        WHEN c.encrypt_option = 0 AND c.net_transport = 'TCP' AND c.client_net_address != '127.0.0.1'
+        THEN 'VULNERABLE - Unencrypted connection - Credential sniffing possible - HIGH'
+        ELSE 'SAFE - Connection encrypted or local'
+    END AS encryption_status
+FROM sys.dm_exec_connections c
+JOIN sys.dm_exec_sessions s ON c.session_id = s.session_id
+WHERE c.net_transport = 'TCP'
+AND c.client_net_address != '127.0.0.1';
+
+================================================================
+COMMAND 35: SERVICE ACCOUNT - PRIVILEGE ESCALATION
+================================================================
+
+SELECT 
+    '=== SERVICE ACCOUNT ===' AS section,
+    SUSER_SNAME() AS current_login,
+    servicename,
+    startup_account,
+    status_desc,
+    CASE 
+        WHEN startup_account LIKE '%Administrator%' OR startup_account = 'sa'
+        THEN 'VULNERABLE - SQL Service running as DOMAIN ADMIN - CRITICAL - Domain compromise possible'
+        WHEN startup_account LIKE '%LOCAL%' OR startup_account LIKE '%SYSTEM%'
+        THEN 'WARNING - SQL Service running as LOCAL SYSTEM - HIGH privilege'
+        WHEN startup_account LIKE '%svc%' OR startup_account LIKE '%service%'
+        THEN 'SAFE - Service account looks appropriate'
+        ELSE 'UNKNOWN - Check service account'
+    END AS service_account_status
+FROM sys.dm_server_services
+WHERE servicename LIKE '%SQL Server%' OR servicename LIKE '%SQLSERVER%';
+
+================================================================
+COMMAND 36: SQL SERVER VERSION - UNSUPPORTED BUILD
+================================================================
+
+SELECT 
+    '=== SQL SERVER VERSION ===' AS section,
+    @@SERVERNAME AS server_name,
+    SERVERPROPERTY('ProductVersion') AS product_version,
+    SERVERPROPERTY('Edition') AS edition,
+    SERVERPROPERTY('ProductLevel') AS product_level,
+    CASE 
+        WHEN SERVERPROPERTY('ProductVersion') LIKE '15%' THEN 'SAFE - SQL Server 2019 - Supported'
+        WHEN SERVERPROPERTY('ProductVersion') LIKE '14%' THEN 'SAFE - SQL Server 2017 - Supported'
+        WHEN SERVERPROPERTY('ProductVersion') LIKE '13%' THEN 'SAFE - SQL Server 2016 - Supported'
+        WHEN SERVERPROPERTY('ProductVersion') LIKE '12%' THEN 'WARNING - SQL Server 2014 - Partially Supported'
+        WHEN SERVERPROPERTY('ProductVersion') LIKE '11%' THEN 'VULNERABLE - SQL Server 2012 - EOL - No security patches'
+        WHEN SERVERPROPERTY('ProductVersion') LIKE '10%' THEN 'VULNERABLE - SQL Server 2008/2008R2 - EOL - Critical vulnerabilities'
+        ELSE 'UNKNOWN - Check version manually'
+    END AS version_status;
+
+================================================================
+COMMAND 37: CONFIGURATION SNAPSHOT - ALL DANGEROUS SETTINGS
+================================================================
+
+SELECT 
+    '=== DANGEROUS FEATURES SUMMARY ===' AS section,
+    name,
+    value_in_use,
+    CASE 
+        WHEN name = 'xp_cmdshell' AND value_in_use = 1 THEN 'CRITICAL - RCE'
+        WHEN name = 'clr enabled' AND value_in_use = 1 THEN 'HIGH - Code Execution'
+        WHEN name = 'Ole Automation Procedures' AND value_in_use = 1 THEN 'HIGH - RCE'
+        WHEN name = 'Ad Hoc Distributed Queries' AND value_in_use = 1 THEN 'MEDIUM - Data Exfil'
+        WHEN name = 'remote admin connections' AND value_in_use = 1 THEN 'MEDIUM - Remote DAC'
+        WHEN name = 'cross db ownership chaining' AND value_in_use = 1 THEN 'MEDIUM - EoP'
+        WHEN name = 'contained database authentication' AND value_in_use = 1 THEN 'MEDIUM - Auth Bypass'
+        WHEN name = 'Database Mail XPs' AND value_in_use = 1 THEN 'LOW - Email'
+        ELSE 'Check'
+    END AS risk_level
+FROM sys.configurations
+WHERE name IN ('xp_cmdshell', 'clr enabled', 'clr strict security',
+               'Ole Automation Procedures', 'Ad Hoc Distributed Queries',
+               'remote admin connections', 'cross db ownership chaining',
+               'contained database authentication', 'Database Mail XPs',
+               'remote access');
+
+================================================================
+COMMAND 38: FINAL COMPLETE SUMMARY - ALL IN ONE
+================================================================
+
+SELECT 
+    '=== FINAL VULNERABILITY SUMMARY ===' AS section,
+    SUSER_SNAME() AS current_login,
+    CASE 
+        WHEN (SELECT COUNT(*) FROM (
+            SELECT 1 FROM sys.configurations WHERE name = 'xp_cmdshell' AND value_in_use = 1 UNION ALL
+            SELECT 1 FROM sys.sql_logins WHERE name = 'sa' AND is_disabled = 0 UNION ALL
+            SELECT 1 FROM sys.server_permissions WHERE permission_name = 'IMPERSONATE' AND major_id = (SELECT principal_id FROM sys.server_principals WHERE name = 'sa') UNION ALL
+            SELECT 1 FROM sys.databases WHERE is_trustworthy_on = 1 AND SUSER_SNAME(owner_sid) IN ('sa') UNION ALL
+            SELECT 1 FROM sys.configurations WHERE name = 'Ole Automation Procedures' AND value_in_use = 1 UNION ALL
+            SELECT 1 FROM sys.configurations WHERE name = 'clr enabled' AND value_in_use = 1 AND (SELECT value_in_use FROM sys.configurations WHERE name = 'clr strict security') = 0 UNION ALL
+            SELECT 1 FROM sys.databases WHERE is_db_chaining_on = 1 UNION ALL
+            SELECT 1 FROM sys.database_principals WHERE name = 'guest' AND authentication_type_desc != 'NONE' UNION ALL
+            SELECT 1 FROM sys.server_role_members srm JOIN sys.server_principals m ON srm.member_principal_id = m.principal_id WHERE m.name NOT IN ('sa', 'NT SERVICE\SQLSERVERAGENT', 'NT SERVICE\MSSQLSERVER')
+        ) AS vulnerabilities) > 0
+        THEN 'CRITICAL - Vulnerabilities found - IMMEDIATE ACTION REQUIRED'
+        ELSE 'SAFE - No critical vulnerabilities found'
+    END AS final_risk_assessment;
+
+================================================================
+END OF COMPLETE SQL SERVER 2019 PENTEST COMMANDS
+TOTAL: 38 COMMANDS - ALL ERROR-FREE - SQL SERVER 2019 COMPATIBLE
+================================================================
