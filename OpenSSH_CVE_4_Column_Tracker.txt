@@ -1,0 +1,28 @@
+CVE | Release Fixed | Severity | Vulnerability
+CVE-2023-25136 | 9.2 | High | Pre-auth double-free in sshd
+CVE-2023-28531 | 9.3 | Medium | Smartcard destination-constraint issue in ssh-add
+CVE-2023-38408 | 9.3p2 | High | PKCS#11-related remote code execution in ssh-agent
+CVE-2023-48795 | 9.6 | Medium | Terrapin SSH protocol prefix-truncation attack
+CVE-2023-51384 | 9.6 | Medium | PKCS#11 destination-constraint bypass
+CVE-2023-51385 | 9.6 | Medium | Command injection via malicious username/hostname
+CVE-2024-39894 | 9.8 | Low/Medium | ObscureKeystrokeTiming timing issue
+CVE-2024-6387 | 9.8 | Critical | Signal-handler race condition (regreSSHion)
+CVE-2025-26465 | 9.9p2 | High | MITM/server impersonation with VerifyHostKeyDNS
+CVE-2025-26466 | 9.9p2 | Medium | Pre-authentication denial of service
+CVE-2025-32728 | 10.0 | Medium | DisableForwarding bypass
+CVE-2025-61984 | 10.1 | Medium | Control-character handling in username
+CVE-2025-61985 | 10.1 | Medium | NUL character in ssh:// URI with ProxyCommand
+CVE-2026-35385 | 10.3 | Medium | scp file permission issue
+CVE-2026-35386 | 10.3 | High | Command execution via shell metacharacters
+CVE-2026-35387 | 10.3 | Low/Medium | Unintended ECDSA algorithm selection
+CVE-2026-35388 | 10.3 | Medium | Proxy connection-multiplexing issue
+CVE-2026-35414 | 10.3 | Medium | authorized_keys principals handling issue
+CVE-2026-59995 | 10.4 | Medium | SFTP downloaded-file path handling
+CVE-2026-59996 | 10.4 | Medium | scp remote-to-remote path handling
+CVE-2026-59997 | 10.4 | Low/Medium | internal-sftp argument handling
+CVE-2026-59998 | 10.4 | Medium | GSSAPI/AD security behavior
+CVE-2026-59999 | 10.4 | Medium | DisableForwarding / PermitTunnel issue
+CVE-2026-60000 | 10.4 | Medium | GSSAPI authentication DoS
+CVE-2026-60001 | 10.4 | Medium | Authentication minimum-delay issue
+CVE-2026-60002 | 10.4 | Medium | Client-side use-after-free during host-key re-exchange
+CVE-2023-51767 | Disputed | N/A | Rowhammer authentication-bypass claim
