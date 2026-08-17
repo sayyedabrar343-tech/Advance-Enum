@@ -1,0 +1,28 @@
+CVE | Release Fixed | Severity | Component | Vulnerability | Configuration Dependency | Cisco Applicable? | Cisco Fixed Release | Cisco Advisory | Client Status | Evidence
+CVE-2023-25136 | 9.2 | High | sshd | Pre-auth double-free | Specific KEX configuration | TBD | TBD | TBD | Pending | TBD
+CVE-2023-28531 | 9.3 | Medium | ssh-add | Smartcard destination-constraint issue | Smartcard/FIDO use | TBD | TBD | TBD | Pending | TBD
+CVE-2023-38408 | 9.3p2 | High | ssh-agent | PKCS#11-related RCE | PKCS#11 provider loaded | TBD | TBD | TBD | Pending | TBD
+CVE-2023-48795 | 9.6 | Medium | SSH protocol | Terrapin prefix-truncation attack | Vulnerable cipher/MAC combinations | TBD | TBD | TBD | Pending | TBD
+CVE-2023-51384 | 9.6 | Medium | ssh-agent | PKCS#11 destination-constraint bypass | PKCS#11 keys | TBD | TBD | TBD | Pending | TBD
+CVE-2023-51385 | 9.6 | Medium | ssh | Command injection via malicious username/hostname | Specific shell/configuration conditions | TBD | TBD | TBD | Pending | TBD
+CVE-2024-39894 | 9.8 | Low/Medium | ssh | Keystroke-timing behavior | ObscureKeystrokeTiming | TBD | TBD | TBD | Pending | TBD
+CVE-2024-6387 | 9.8 | Critical | sshd | Signal-handler race condition / regreSSHion | Specific OS/threading conditions | TBD | TBD | TBD | Pending | TBD
+CVE-2025-26465 | 9.9p2 | High | ssh | MITM/server impersonation | VerifyHostKeyDNS | TBD | TBD | TBD | Pending | TBD
+CVE-2025-26466 | 9.9p2 | Medium | sshd | Pre-auth DoS | SSH2_MSG_PING handling | TBD | TBD | TBD | Pending | TBD
+CVE-2025-32728 | 10.0 | Medium | sshd | DisableForwarding bypass | X11/agent forwarding | TBD | TBD | TBD | Pending | TBD
+CVE-2025-61984 | 10.1 | Medium | ssh | Control-character handling in username | ProxyCommand | TBD | TBD | TBD | Pending | TBD
+CVE-2025-61985 | 10.1 | Medium | ssh | NUL in ssh:// URI | ProxyCommand | TBD | TBD | TBD | Pending | TBD
+CVE-2026-35385 | 10.3 | Medium | scp | File permission issue | Legacy scp behavior | TBD | TBD | TBD | Pending | TBD
+CVE-2026-35386 | 10.3 | High | ssh | Command execution via username | Specific configuration | TBD | TBD | TBD | Pending | TBD
+CVE-2026-35387 | 10.3 | Low/Medium | SSH algorithms | Unintended ECDSA algorithms | Algorithm configuration | TBD | TBD | TBD | Pending | TBD
+CVE-2026-35388 | 10.3 | Medium | ssh | Proxy connection multiplexing issue | Proxy mode | TBD | TBD | TBD | Pending | TBD
+CVE-2026-35414 | 10.3 | Medium | sshd | authorized_keys principals handling | CA/principals configuration | TBD | TBD | TBD | Pending | TBD
+CVE-2026-59995 | 10.4 | Medium | sftp | Downloaded-file path handling | SFTP client/server interaction | TBD | TBD | TBD | Pending | TBD
+CVE-2026-59996 | 10.4 | Medium | scp | Remote-to-remote path handling | scp usage | TBD | TBD | TBD | Pending | TBD
+CVE-2026-59997 | 10.4 | Low/Medium | internal-sftp | Argument handling limitation | internal-sftp | TBD | TBD | TBD | Pending | TBD
+CVE-2026-59998 | 10.4 | Medium | sshd | GSSAPI/AD security behavior | GSSAPI + Windows AD | TBD | TBD | TBD | Pending | TBD
+CVE-2026-59999 | 10.4 | Medium | sshd | DisableForwarding / PermitTunnel issue | Tunnel configuration | TBD | TBD | TBD | Pending | TBD
+CVE-2026-60000 | 10.4 | Medium | sshd | GSSAPI authentication DoS | GSSAPI | TBD | TBD | TBD | Pending | TBD
+CVE-2026-60001 | 10.4 | Medium | sshd | Authentication delay not enforced | Authentication configuration | TBD | TBD | TBD | Pending | TBD
+CVE-2026-60002 | 10.4 | Medium | ssh | Client-side use-after-free | Host-key re-exchange | TBD | TBD | TBD | Pending | TBD
+CVE-2023-51767 | Disputed | N/A | sshd | Rowhammer authentication-bypass claim | Hardware/platform dependent | TBD | TBD | TBD | Pending | TBD
