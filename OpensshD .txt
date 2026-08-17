@@ -1,0 +1,353 @@
+==============================================================
+  OPENSSH CVE COMPLETE LIST (9.1p1 to 10.5p1)
+  All confirmed CVEs + Disputed + Distribution-specific CVEs
+==============================================================
+
+================================================================
+  1. 9.1p1 MEIN FIX KI GAYI VULNERABILITIES
+================================================================
+
+CVE / Issue              : Memory safety issues (3 issues)
+Fixed Version            : 9.1p1
+Description              : 9.1p1 release mein teen memory safety issues 
+                           fix kiye gaye: ssh-keyscan mein one-byte 
+                           overflow, ssh-keygen aur ssh-keysign mein 
+                           double-free vulnerabilities.
+
+================================================================
+  2. 9.1p1 KE BAAD KI CVEs (9.2 to 10.4)
+================================================================
+
+----------------------------------------------------------------
+CVE-2023-25136
+Fixed Version            : 9.2
+Severity                 : High
+Description              : Pre-auth double-free vulnerability in sshd
+----------------------------------------------------------------
+
+----------------------------------------------------------------
+CVE-2023-28531
+Fixed Version            : 9.3
+Severity                 : Medium
+Description              : Smartcard destination-constraint issue in 
+                           ssh-add
+----------------------------------------------------------------
+
+----------------------------------------------------------------
+CVE-2023-38408
+Fixed Version            : 9.3p2
+Severity                 : High
+Description              : PKCS#11-related remote code execution in 
+                           ssh-agent
+----------------------------------------------------------------
+
+----------------------------------------------------------------
+CVE-2023-48795
+Fixed Version            : 9.6
+Severity                 : Medium
+Description              : Terrapin attack: SSH protocol prefix-
+                           truncation attack
+----------------------------------------------------------------
+
+----------------------------------------------------------------
+CVE-2023-51384
+Fixed Version            : 9.6
+Severity                 : Medium
+Description              : PKCS#11 destination-constraint bypass
+----------------------------------------------------------------
+
+----------------------------------------------------------------
+CVE-2023-51385
+Fixed Version            : 9.6
+Severity                 : Medium
+Description              : Command injection via malicious username/
+                           hostname
+----------------------------------------------------------------
+
+----------------------------------------------------------------
+CVE-2024-6387
+Fixed Version            : 9.8
+Severity                 : CRITICAL
+Description              : Signal handler race condition (regreSSHion) - 
+                           potential RCE as root. HIGHEST PRIORITY.
+----------------------------------------------------------------
+
+----------------------------------------------------------------
+CVE-2024-39894
+Fixed Version            : 9.8
+Severity                 : Low/Medium
+Description              : ObscureKeystrokeTiming timing attack
+----------------------------------------------------------------
+
+----------------------------------------------------------------
+CVE-2025-26465
+Fixed Version            : 9.9p2
+Severity                 : High
+Description              : MITM/server impersonation with 
+                           VerifyHostKeyDNS
+----------------------------------------------------------------
+
+----------------------------------------------------------------
+CVE-2025-26466
+Fixed Version            : 9.9p2
+Severity                 : Medium
+Description              : Pre-authentication denial of service
+----------------------------------------------------------------
+
+----------------------------------------------------------------
+CVE-2025-61984
+Fixed Version            : 10.0
+Severity                 : Medium
+Description              : Control-character handling in username
+----------------------------------------------------------------
+
+----------------------------------------------------------------
+CVE-2025-61985
+Fixed Version            : 10.1
+Severity                 : Medium
+Description              : NUL character in ssh:// URI with 
+                           ProxyCommand
+----------------------------------------------------------------
+
+----------------------------------------------------------------
+CVE-2026-35385
+Fixed Version            : 10.3
+Severity                 : Medium
+Description              : scp file permission issue
+----------------------------------------------------------------
+
+----------------------------------------------------------------
+CVE-2026-35386
+Fixed Version            : 10.3
+Severity                 : High
+Description              : Command execution via shell metacharacters
+----------------------------------------------------------------
+
+----------------------------------------------------------------
+CVE-2026-35387
+Fixed Version            : 10.3
+Severity                 : Low/Medium
+Description              : Unintended ECDSA algorithm selection
+----------------------------------------------------------------
+
+----------------------------------------------------------------
+CVE-2026-35388
+Fixed Version            : 10.3
+Severity                 : Medium
+Description              : Proxy connection-multiplexing issue
+----------------------------------------------------------------
+
+----------------------------------------------------------------
+CVE-2026-35414
+Fixed Version            : 10.3
+Severity                 : Medium
+Description              : authorized_keys principals handling issue
+----------------------------------------------------------------
+
+----------------------------------------------------------------
+CVE-2026-59995
+Fixed Version            : 10.4
+Severity                 : Medium
+Description              : SFTP downloaded-file path handling
+----------------------------------------------------------------
+
+----------------------------------------------------------------
+CVE-2026-59996
+Fixed Version            : 10.4
+Severity                 : Medium
+Description              : scp remote-to-remote path traversal
+----------------------------------------------------------------
+
+----------------------------------------------------------------
+CVE-2026-59997
+Fixed Version            : 10.4
+Severity                 : Low/Medium
+Description              : internal-sftp argument handling
+----------------------------------------------------------------
+
+----------------------------------------------------------------
+CVE-2026-59998
+Fixed Version            : 10.4
+Severity                 : Medium
+Description              : GSSAPI/AD security behavior
+----------------------------------------------------------------
+
+----------------------------------------------------------------
+CVE-2026-59999
+Fixed Version            : 10.4
+Severity                 : Medium
+Description              : DisableForwarding / PermitTunnel issue
+----------------------------------------------------------------
+
+----------------------------------------------------------------
+CVE-2026-60000
+Fixed Version            : 10.4
+Severity                 : Medium
+Description              : GSSAPI authentication DoS
+----------------------------------------------------------------
+
+----------------------------------------------------------------
+CVE-2026-60001
+Fixed Version            : 10.4
+Severity                 : Medium
+Description              : Authentication minimum-delay issue
+----------------------------------------------------------------
+
+----------------------------------------------------------------
+CVE-2026-60002
+Fixed Version            : 10.4
+Severity                 : Medium
+Description              : Client-side use-after-free during host-key 
+                           re-exchange
+----------------------------------------------------------------
+
+================================================================
+  3. 10.5p1 MEIN FIX KI GAYI VULNERABILITIES
+================================================================
+
+----------------------------------------------------------------
+Issue                    : Agent Locking Bypass
+Fixed Version            : 10.5p1
+CVE                      : None assigned (security fix)
+Description              : Agent locking ke dauran session binding 
+                           requests galat handle ho rahe the. Remote 
+                           operations (PKCS#11 tokens add karna) 
+                           allowed ho rahe the, jabki sirf local 
+                           operations ki permission honi chahiye thi.
+----------------------------------------------------------------
+
+----------------------------------------------------------------
+Issue                    : Client Use-After-Free
+Fixed Version            : 10.5p1
+CVE                      : None assigned (security fix)
+Description              : Multiplexed connections mein remote 
+                           forwarding add karne par use-after-free 
+                           vulnerability.
+----------------------------------------------------------------
+
+----------------------------------------------------------------
+Issue                    : authorized_keys 'restrict' Bypass
+Fixed Version            : 10.5p1
+CVE                      : None assigned (security fix)
+Description              : authorized_keys mein 'restrict' keyword 
+                           tunnel forwarding par apply nahi ho raha 
+                           tha.
+----------------------------------------------------------------
+
+================================================================
+  4. DISPUTED CVE (OpenSSH Team ne officially reject kiya)
+================================================================
+
+----------------------------------------------------------------
+CVE-2023-51767
+Status                   : DISPUTED
+Fixed Version            : N/A (No fix required)
+Severity                 : N/A
+Description              : OpenSSH through 10.0, when common types of 
+                           DRAM are used, might allow row hammer 
+                           attacks for authentication bypass.
+
+OPENSSH TEAM RESPONSE    : Damien Miller (OpenSSH developer) ne ise 
+                           "bogus" kaha aur reject kar diya. Unka 
+                           kehna hai ki platform architectural 
+                           weaknesses ko application par blame nahi 
+                           kiya ja sakta.
+
+UBUNTU STATUS            : Ubuntu ne ise "not-affected" mark kiya hai 
+                           kyunki practical world mein exploitable 
+                           nahi hai.
+----------------------------------------------------------------
+
+================================================================
+  5. DISTRIBUTION-SPECIFIC CVEs (AlmaLinux, RHEL, Fedora, Oracle)
+================================================================
+
+NOTE: Yeh CVEs upstream OpenSSH mein nahi, balki specific Linux 
+distributions ke packages mein fix ki gayi hain. Inka fix version 
+9.9p1-8 ya usse upar hai.
+
+----------------------------------------------------------------
+CVE-2026-55653
+Fixed Version            : 9.9p1-8+
+Severity                 : N/A
+Affected Distributions   : AlmaLinux, RHEL, Fedora, Oracle Linux
+Description              : Double free vulnerability in OpenSSH DH-GEX 
+                           client path during FIPS known-group 
+                           validation. Malicious SSH server client-side 
+                           DoS trigger kar sakta hai.
+----------------------------------------------------------------
+
+----------------------------------------------------------------
+CVE-2026-55654
+Fixed Version            : 9.9p1-8+
+Severity                 : N/A
+Affected Distributions   : AlmaLinux, RHEL, Fedora, Oracle Linux
+Description              : Heap out-of-bounds read in GSSAPI indicator 
+                           cleanup due to missing NULL sentinel 
+                           termination.
+----------------------------------------------------------------
+
+----------------------------------------------------------------
+CVE-2026-55655
+Fixed Version            : 9.9p1-8+
+Severity                 : N/A
+Affected Distributions   : AlmaLinux, RHEL, Fedora, Oracle Linux
+Description              : Local MITM of X11 forwarding via abstract 
+                           UNIX socket pre-binding in OpenSSH client 
+                           versions.
+----------------------------------------------------------------
+
+================================================================
+  SUMMARY TABLE (Quick Reference)
+================================================================
+
+| CVE Number          | Fixed Version | Status        |
+|---------------------|---------------|---------------|
+| Memory safety (3)   | 9.1p1         | Confirmed     |
+| CVE-2023-25136      | 9.2           | Confirmed     |
+| CVE-2023-28531      | 9.3           | Confirmed     |
+| CVE-2023-38408      | 9.3p2         | Confirmed     |
+| CVE-2023-48795      | 9.6           | Confirmed     |
+| CVE-2023-51384      | 9.6           | Confirmed     |
+| CVE-2023-51385      | 9.6           | Confirmed     |
+| CVE-2024-6387       | 9.8           | Confirmed     |
+| CVE-2024-39894      | 9.8           | Confirmed     |
+| CVE-2025-26465      | 9.9p2         | Confirmed     |
+| CVE-2025-26466      | 9.9p2         | Confirmed     |
+| CVE-2025-61984      | 10.0          | Confirmed     |
+| CVE-2025-61985      | 10.1          | Confirmed     |
+| CVE-2026-35385      | 10.3          | Confirmed     |
+| CVE-2026-35386      | 10.3          | Confirmed     |
+| CVE-2026-35387      | 10.3          | Confirmed     |
+| CVE-2026-35388      | 10.3          | Confirmed     |
+| CVE-2026-35414      | 10.3          | Confirmed     |
+| CVE-2026-59995      | 10.4          | Confirmed     |
+| CVE-2026-59996      | 10.4          | Confirmed     |
+| CVE-2026-59997      | 10.4          | Confirmed     |
+| CVE-2026-59998      | 10.4          | Confirmed     |
+| CVE-2026-59999      | 10.4          | Confirmed     |
+| CVE-2026-60000      | 10.4          | Confirmed     |
+| CVE-2026-60001      | 10.4          | Confirmed     |
+| CVE-2026-60002      | 10.4          | Confirmed     |
+| Agent Locking Bypass | 10.5p1        | Confirmed     |
+| Client Use-After-Free| 10.5p1        | Confirmed     |
+| restrict Bypass      | 10.5p1        | Confirmed     |
+| CVE-2023-51767       | N/A           | DISPUTED      |
+| CVE-2026-55653       | 9.9p1-8+      | Distro-Specific|
+| CVE-2026-55654       | 9.9p1-8+      | Distro-Specific|
+| CVE-2026-55655       | 9.9p1-8+      | Distro-Specific|
+
+================================================================
+  RECOMMENDATION
+================================================================
+
+1. Apna version check karein: ssh -V
+2. Agar 10.5p1 se purana version use kar rahe hain toh turant 
+   OpenSSH 10.5p1 ya usse naye version mein upgrade karein.
+3. CVE-2024-6387 (regreSSHion) CRITICAL hai - ise sabse pehle patch 
+   karein.
+4. CVE-2026-55653, 55654, 55565 ke liye distribution-specific 
+   updates check karein (AlmaLinux, RHEL, Fedora, Oracle Linux).
+5. CVE-2023-51767 ko ignore karein - OpenSSH team ne reject kiya hai.
+
+==============================================================
