@@ -1,0 +1,1931 @@
+================================================================================
+ADVANCED WINDOWS SERVER PENETRATION-TESTING CHECKLIST (CMD / NATIVE TOOLS)
+Authorized internal security assessment use only.
+================================================================================
+
+NOTES:
+- All commands are CMD/native Windows utilities.
+- Run only on systems you are authorized to test.
+- "SAFE" and "VULNERABLE" examples are illustrative; real output varies.
+- Validate every finding manually before reporting.
+
+================================================================================
+SECTION 1 - SERVICE DACL / SERVICE-CONTROL PERMISSION ABUSE
+================================================================================
+
+TEST #1 - Service DACL / Service-Control Permission Abuse
+
+Purpose: Detect services where low-priv users can change config/start/stop.
+
+CMD:
+sc sdshow <service_name>
+sc query <service_name>
+sc qc <service_name>
+
+SAFE OUTPUT EXAMPLE:
+D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWLOCRRC;;;IU)(A;;CCLCSWLOCRRC;;;SU)
+
+VULNERABLE OUTPUT EXAMPLE:
+D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;RPWPCRCCDCLCLORCWOWDSDDTSW;;;BU)
+
+WHAT TO LOOK FOR:
+- ACEs granting CC (Change Config), RP (Start), WP (Stop), WD (Write DAC)
+  to BU, IU, AU, WD (Everyone), or other non-admin principals.
+
+WHY IT MATTERS:
+- SERVICE_CHANGE_CONFIG allows binary-path redirection.
+- Start/stop rights allow triggering the modified binary.
+
+EXPLOITABILITY CONDITIONS:
+- Need CC plus ability to restart service (RP/WP or reboot).
+- Service account privilege determines impact (SYSTEM = critical).
+
+EVIDENCE:
+- sc sdshow, sc qc, sc query output.
+- whoami /groups proving low-priv context.
+
+SEVERITY:
+- High if CC + RP/WP to Users.
+- Critical if service runs as SYSTEM.
+
+SAFE VALIDATION:
+- sc query <svc> (read-only).
+- Attempt sc config <svc> binpath= ... should return Access Denied.
+
+--------------------------------------------------------------------------------
+
+TEST #2 - Privileged Service Binary ACLs
+
+Purpose: Check ACLs on service executables running as SYSTEM/privileged.
+
+CMD:
+sc qc <service_name>
+icacls "<binary_path>"
+
+SAFE OUTPUT EXAMPLE:
+C:\Program Files\Vendor\svc.exe BUILTIN\Administrators:(F)
+                              NT AUTHORITY\SYSTEM:(F)
+                              BUILTIN\Users:(RX)
+
+VULNERABLE OUTPUT EXAMPLE:
+C:\Program Files\Vendor\svc.exe BUILTIN\Users:(M)
+                              BUILTIN\Administrators:(F)
+                              NT AUTHORITY\SYSTEM:(F)
+
+WHAT TO LOOK FOR:
+- (M), (W), (F), or (D) for BU, AU, WD, or IU on privileged binaries.
+
+WHY IT MATTERS:
+- Writable privileged binary = direct privilege escalation.
+
+EXPLOITABILITY CONDITIONS:
+- Attacker must be able to modify the binary and trigger service restart.
+
+EVIDENCE:
+- sc qc output, icacls output, service account identity.
+
+SEVERITY:
+- Critical if SYSTEM service binary is writable.
+
+SAFE VALIDATION:
+- accesschk -wvu "<binary_path>" (if available) or icacls review only.
+
+--------------------------------------------------------------------------------
+
+TEST #3 - Service Parent-Directory ACLs
+
+Purpose: Check ACLs on directories containing privileged service binaries.
+
+CMD:
+sc qc <service_name>
+icacls "<parent_directory>"
+icacls "<grandparent_directory>"
+
+SAFE OUTPUT EXAMPLE:
+C:\Program Files\Vendor BUILTIN\Administrators:(F)
+                       NT AUTHORITY\SYSTEM:(F)
+                       BUILTIN\Users:(RX)
+
+VULNERABLE OUTPUT EXAMPLE:
+C:\Program Files\Vendor BUILTIN\Users:(OI)(CI)(M)
+                       BUILTIN\Administrators:(F)
+                       NT AUTHORITY\SYSTEM:(F)
+
+WHAT TO LOOK FOR:
+- (W), (M), (F) for BU/AU/WD on any parent directory in the service path.
+
+WHY IT MATTERS:
+- Allows DLL planting, config tampering, or binary replacement.
+
+EXPLOITABILITY CONDITIONS:
+- Service must load DLLs/config from that directory, or binary must be replaceable.
+
+EVIDENCE:
+- icacls on each path component.
+
+SEVERITY:
+- High to Critical depending on service account.
+
+SAFE VALIDATION:
+- icacls review only; do not create/modify files.
+
+--------------------------------------------------------------------------------
+
+TEST #4 - Unquoted Service Paths with Full Path-Component Analysis
+
+Purpose: Find unquoted service paths with writable intermediate directories.
+
+CMD:
+wmic service get name,displayname,pathname,startmode | findstr /i "auto" | findstr /i /v "c:\windows\\" | findstr /i /v """
+icacls "C:\Program Files\Vuln Service"
+icacls "C:\Program Files"
+icacls "C:\"
+
+SAFE OUTPUT EXAMPLE:
+C:\Program Files\Vuln Service BUILTIN\Administrators:(F)
+                         NT AUTHORITY\SYSTEM:(F)
+                         BUILTIN\Users:(RX)
+
+VULNERABLE OUTPUT EXAMPLE:
+C:\Program Files\Vuln Service BUILTIN\Users:(OI)(CI)(M)
+
+WHAT TO LOOK FOR:
+- Unquoted path with spaces AND a writable intermediate directory.
+
+WHY IT MATTERS:
+- Windows resolves the shorter path first; attacker places malicious exe.
+
+EXPLOITABILITY CONDITIONS:
+- Must be able to write to a preceding path component AND trigger execution.
+
+EVIDENCE:
+- wmic output, sc qc (BINARY_PATH_NAME), icacls on each component.
+
+SEVERITY:
+- High to Critical (SYSTEM = Critical).
+
+SAFE VALIDATION:
+- Create and delete a harmless test file in the writable dir (with approval).
+
+--------------------------------------------------------------------------------
+
+TEST #5 - Service DLL / ServiceDll Configuration
+
+Purpose: Check ServiceDll values for Svchost-hosted services.
+
+CMD:
+reg query "HKLM\SYSTEM\CurrentControlSet\Services\<svc>\Parameters" /v ServiceDll
+icacls "<ServiceDll path>"
+
+SAFE OUTPUT EXAMPLE:
+ServiceDll    REG_EXPAND_SZ    %SystemRoot%\System32\foo.dll
+
+VULNERABLE OUTPUT EXAMPLE:
+ServiceDll    REG_EXPAND_SZ    C:\Users\Public\evil.dll
+
+WHAT TO LOOK FOR:
+- ServiceDll pointing outside System32 or to a writable path.
+
+WHY IT MATTERS:
+- Svchost loads the DLL as SYSTEM.
+
+EXPLOITABILITY CONDITIONS:
+- Need write access to the DLL path and ability to restart the service.
+
+EVIDENCE:
+- reg query output, icacls on DLL path.
+
+SEVERITY:
+- Critical if writable and SYSTEM-hosted.
+
+SAFE VALIDATION:
+- reg query only.
+
+--------------------------------------------------------------------------------
+
+TEST #6 - Service Failure-Action Abuse
+
+Purpose: Check failure commands that run on service crash.
+
+CMD:
+sc qfailure <service_name>
+sc qc <service_name>
+
+SAFE OUTPUT EXAMPLE:
+RESET_PERIOD : 86400
+REBOOT_MSG   : 
+COMMAND_LINE : 
+
+VULNERABLE OUTPUT EXAMPLE:
+COMMAND_LINE : C:\Users\Public\payload.exe
+
+WHAT TO LOOK FOR:
+- Non-empty COMMAND_LINE pointing to a writable path.
+
+WHY IT MATTERS:
+- Failure actions execute as the service account.
+
+EXPLOITABILITY CONDITIONS:
+- Must be able to crash the service or trigger failure.
+
+EVIDENCE:
+- sc qfailure output.
+
+SEVERITY:
+- High if SYSTEM service.
+
+SAFE VALIDATION:
+- sc qfailure is read-only.
+
+================================================================================
+SECTION 2 - SCHEDULED TASKS
+================================================================================
+
+TEST #7 - Scheduled-Task Privilege-Boundary Issues
+
+Purpose: Find tasks running as privileged accounts with weak ACLs.
+
+CMD:
+schtasks /query /fo LIST /v
+schtasks /query /tn "<task>" /xml
+
+SAFE OUTPUT EXAMPLE:
+Run As User: SYSTEM
+Task To Run: C:\Windows\System32\cleanup.exe
+Author: BUILTIN\Administrators
+
+VULNERABLE OUTPUT EXAMPLE:
+Run As User: SYSTEM
+Task To Run: C:\Users\Public\evil.exe
+Author: DOMAIN\lowprivuser
+
+WHAT TO LOOK FOR:
+- Privileged Run As User with task binary in writable path.
+- Task authored/modifiable by non-admin.
+
+WHY IT MATTERS:
+- Task executes attacker binary as SYSTEM/admin.
+
+EXPLOITABILITY CONDITIONS:
+- Write access to task binary or task definition.
+
+EVIDENCE:
+- schtasks /query /v output, task XML, icacls on binary.
+
+SEVERITY:
+- High to Critical.
+
+SAFE VALIDATION:
+- schtasks /query only.
+
+--------------------------------------------------------------------------------
+
+TEST #8 - Writable Scheduled-Task Payloads
+
+Purpose: Check ACLs on task executables/scripts.
+
+CMD:
+schtasks /query /fo LIST /v | findstr /i "Task To Run"
+icacls "<task_binary>"
+
+SAFE OUTPUT EXAMPLE:
+C:\Program Files\App\task.exe BUILTIN\Administrators:(F)
+                             NT AUTHORITY\SYSTEM:(F)
+                             BUILTIN\Users:(RX)
+
+VULNERABLE OUTPUT EXAMPLE:
+C:\Program Files\App\task.exe BUILTIN\Users:(M)
+
+WHAT TO LOOK FOR:
+- (M), (W), (F) for non-admin principals.
+
+WHY IT MATTERS:
+- Task payload replacement = code execution as task account.
+
+EXPLOITABILITY CONDITIONS:
+- Task must run on schedule or be triggerable.
+
+EVIDENCE:
+- schtasks output, icacls output.
+
+SEVERITY:
+- High if task runs as SYSTEM/admin.
+
+SAFE VALIDATION:
+- icacls review only.
+
+================================================================================
+SECTION 3 - REGISTRY-BASED PRIVILEGE ESCALATION
+================================================================================
+
+TEST #9 - Image File Execution Options (IFEO)
+
+Purpose: Detect debugger hijacking of executables.
+
+CMD:
+reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options" /s
+
+SAFE OUTPUT EXAMPLE:
+(no Debugger values present)
+
+VULNERABLE OUTPUT EXAMPLE:
+HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\sethc.exe
+    Debugger    REG_SZ    C:\Windows\System32\cmd.exe
+
+WHAT TO LOOK FOR:
+- Any Debugger REG_SZ value, especially for sethc.exe, utilman.exe, osk.exe, Magnify.exe.
+
+WHY IT MATTERS:
+- Debugger runs in place of target binary; accessibility binaries run as SYSTEM at lock screen.
+
+EXPLOITABILITY CONDITIONS:
+- Requires write to HKLM IFEO (admin/SYSTEM) or exploitation of a writer.
+
+EVIDENCE:
+- reg query /s output.
+
+SEVERITY:
+- Critical for accessibility binaries; High for persistence.
+
+SAFE VALIDATION:
+- reg query only.
+
+--------------------------------------------------------------------------------
+
+TEST #10 - Winlogon Configuration
+
+Purpose: Check Userinit, Shell, AppSetup for tampering.
+
+CMD:
+reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v Userinit
+reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v Shell
+reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v AppSetup
+
+SAFE OUTPUT EXAMPLE:
+Userinit    REG_SZ    C:\Windows\system32\userinit.exe,
+Shell       REG_SZ    explorer.exe
+
+VULNERABLE OUTPUT EXAMPLE:
+Userinit    REG_SZ    C:\Windows\system32\userinit.exe,C:\Users\Public\evil.exe
+
+WHAT TO LOOK FOR:
+- Extra binaries after userinit.exe,; non-explorer Shell.
+
+WHY IT MATTERS:
+- Runs at logon; persistence and possible SYSTEM execution.
+
+EXPLOITABILITY CONDITIONS:
+- Requires write to Winlogon key.
+
+EVIDENCE:
+- reg query outputs.
+
+SEVERITY:
+- Critical.
+
+SAFE VALIDATION:
+- reg query only.
+
+--------------------------------------------------------------------------------
+
+TEST #11 - AppInit DLL Configuration
+
+Purpose: Detect AppInit_DLLs injection (legacy, still relevant).
+
+CMD:
+reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows" /v AppInit_DLLs
+reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows" /v LoadAppInit_DLLs
+reg query "HKLM\SOFTWARE\Wow6432Node\Microsoft\Windows NT\CurrentVersion\Windows" /v AppInit_DLLs
+
+SAFE OUTPUT EXAMPLE:
+AppInit_DLLs      REG_SZ
+LoadAppInit_DLLs  REG_DWORD  0x0
+
+VULNERABLE OUTPUT EXAMPLE:
+AppInit_DLLs      REG_SZ     C:\Users\Public\evil.dll
+LoadAppInit_DLLs  REG_DWORD  0x1
+
+WHAT TO LOOK FOR:
+- Non-empty AppInit_DLLs with LoadAppInit_DLLs = 0x1.
+
+WHY IT MATTERS:
+- DLL loads into every user32.dll-linked process.
+
+EXPLOITABILITY CONDITIONS:
+- Requires write to HKLM key and process restart.
+
+EVIDENCE:
+- reg query outputs.
+
+SEVERITY:
+- High to Critical.
+
+SAFE VALIDATION:
+- reg query only.
+
+--------------------------------------------------------------------------------
+
+TEST #12 - COM / CLSID Registration and DLL Hijacking
+
+Purpose: Identify CLSIDs pointing to writable DLLs.
+
+CMD:
+reg query "HKLM\SOFTWARE\Classes\CLSID" /s | findstr /i "InprocServer32 LocalServer32"
+reg query "HKLM\SOFTWARE\Classes\Wow6432Node\CLSID" /s | findstr /i "InprocServer32 LocalServer32"
+
+SAFE OUTPUT EXAMPLE:
+C:\Windows\System32\ole32.dll
+
+VULNERABLE OUTPUT EXAMPLE:
+C:\Users\Public\evil.dll
+
+WHAT TO LOOK FOR:
+- COM servers pointing to non-System32 writable paths.
+
+WHY IT MATTERS:
+- Privileged process loading the CLSID executes attacker DLL.
+
+EXPLOITABILITY CONDITIONS:
+- A privileged process must instantiate the CLSID.
+
+EVIDENCE:
+- reg query outputs; Procmon/ETW traces if authorized.
+
+SEVERITY:
+- High to Critical.
+
+SAFE VALIDATION:
+- reg query only.
+
+--------------------------------------------------------------------------------
+
+TEST #13 - HKCU/HKLM COM Override Analysis
+
+Purpose: Detect user-writable COM registrations shadowing HKLM.
+
+CMD:
+reg query "HKCU\Software\Classes\CLSID" /s | findstr /i "InprocServer32 LocalServer32"
+
+SAFE OUTPUT EXAMPLE:
+(no entries or only benign user CLSIDs)
+
+VULNERABLE OUTPUT EXAMPLE:
+HKEY_CURRENT_USER\Software\Classes\CLSID\{...}\InprocServer32
+    (Default)    REG_SZ    C:\Users\Public\evil.dll
+
+WHAT TO LOOK FOR:
+- HKCU CLSIDs matching HKLM CLSIDs used by privileged processes.
+
+WHY IT MATTERS:
+- HKCU takes precedence; DLL loads into privileged process.
+
+EXPLOITABILITY CONDITIONS:
+- Privileged process must load the CLSID.
+
+EVIDENCE:
+- HKCU and HKLM reg query outputs.
+
+SEVERITY:
+- High.
+
+SAFE VALIDATION:
+- reg query only.
+
+--------------------------------------------------------------------------------
+
+TEST #14 - App Paths Hijacking
+
+Purpose: Detect writable App Paths entries.
+
+CMD:
+reg query "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths" /s
+reg query "HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths" /s
+
+SAFE OUTPUT EXAMPLE:
+(Default)    REG_SZ    C:\Windows\System32\notepad.exe
+
+VULNERABLE OUTPUT EXAMPLE:
+(Default)    REG_SZ    C:\Users\Public\evil.exe
+
+WHAT TO LOOK FOR:
+- App Paths pointing to user-writable locations.
+
+WHY IT MATTERS:
+- Applications launched by name may resolve to attacker binary.
+
+EXPLOITABILITY CONDITIONS:
+- A privileged process must launch the app by name.
+
+EVIDENCE:
+- reg query outputs.
+
+SEVERITY:
+- Medium to High.
+
+SAFE VALIDATION:
+- reg query only.
+
+--------------------------------------------------------------------------------
+
+TEST #15 - PATH / Search-Order Hijacking
+
+Purpose: Identify writable directories in system PATH.
+
+CMD:
+echo %PATH%
+reg query "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v Path
+reg query "HKCU\Environment" /v Path
+
+SAFE OUTPUT EXAMPLE:
+C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem
+
+VULNERABLE OUTPUT EXAMPLE:
+C:\Users\Public;C:\Windows\system32;C:\Windows
+
+WHAT TO LOOK FOR:
+- Writable directories (Users, Temp, Public) in PATH before System32.
+
+WHY IT MATTERS:
+- DLL/exe search order can be hijacked.
+
+EXPLOITABILITY CONDITIONS:
+- Privileged process must load a binary by name without full path.
+
+EVIDENCE:
+- PATH output and icacls on writable entries.
+
+SEVERITY:
+- Medium to High.
+
+SAFE VALIDATION:
+- Read-only queries.
+
+--------------------------------------------------------------------------------
+
+TEST #16 - AlwaysInstallElevated
+
+Purpose: Check if MSI installs run elevated for all users.
+
+CMD:
+reg query HKCU\SOFTWARE\Policies\Microsoft\Windows\Installer /v AlwaysInstallElevated
+reg query HKLM\SOFTWARE\Policies\Microsoft\Windows\Installer /v AlwaysInstallElevated
+
+SAFE OUTPUT EXAMPLE:
+ERROR: The system was unable to find the specified registry key or value.
+(or REG_DWORD 0x0)
+
+VULNERABLE OUTPUT EXAMPLE:
+AlwaysInstallElevated    REG_DWORD    0x1
+(both hives)
+
+WHAT TO LOOK FOR:
+- 0x1 in BOTH HKCU and HKLM.
+
+WHY IT MATTERS:
+- Any user can install MSI as SYSTEM.
+
+EXPLOITABILITY CONDITIONS:
+- Both hives must be 0x1.
+
+EVIDENCE:
+- Both reg query outputs.
+
+SEVERITY:
+- Critical.
+
+SAFE VALIDATION:
+- reg query only.
+
+================================================================================
+SECTION 4 - LSA / CREDENTIAL PROTECTION
+================================================================================
+
+TEST #17 - LSA Configuration
+
+Purpose: Review LSA policy and authentication packages.
+
+CMD:
+reg query "HKLM\SYSTEM\CurrentControlSet\Control\Lsa" /v RunAsPPL
+reg query "HKLM\SYSTEM\CurrentControlSet\Control\Lsa" /v LmCompatibilityLevel
+reg query "HKLM\SYSTEM\CurrentControlSet\Control\Lsa" /v NoLMHash
+reg query "HKLM\SYSTEM\CurrentControlSet\Control\Lsa" /v DisableRestrictedAdmin
+reg query "HKLM\SYSTEM\CurrentControlSet\Control\Lsa" /v Authentication Packages
+
+SAFE OUTPUT EXAMPLE:
+RunAsPPL              REG_DWORD  0x1
+LmCompatibilityLevel  REG_DWORD  0x5
+NoLMHash              REG_DWORD  0x1
+DisableRestrictedAdmin REG_DWORD 0x0
+
+VULNERABLE OUTPUT EXAMPLE:
+RunAsPPL              REG_DWORD  0x0
+LmCompatibilityLevel  REG_DWORD  0x2
+NoLMHash              REG_DWORD  0x0
+
+WHAT TO LOOK FOR:
+- RunAsPPL = 0x0 (LSASS not protected)
+- LmCompatibilityLevel < 0x3
+- NoLMHash = 0x0
+- Unexpected Authentication Packages
+
+WHY IT MATTERS:
+- Weak LSA config enables credential theft/relay.
+
+EXPLOITABILITY CONDITIONS:
+- Requires admin/SYSTEM to dump LSASS if RunAsPPL=0.
+
+EVIDENCE:
+- reg query outputs.
+
+SEVERITY:
+- Medium to Critical.
+
+SAFE VALIDATION:
+- reg query only.
+
+--------------------------------------------------------------------------------
+
+TEST #18 - LSA Protection / RunAsPPL
+
+Purpose: Confirm LSASS PPL status.
+
+CMD:
+reg query "HKLM\SYSTEM\CurrentControlSet\Control\Lsa" /v RunAsPPL
+reg query "HKLM\SYSTEM\CurrentControlSet\Control\Lsa" /v RunAsPPLBoot
+
+SAFE OUTPUT EXAMPLE:
+RunAsPPL     REG_DWORD    0x1
+RunAsPPLBoot REG_DWORD    0x1
+
+VULNERABLE OUTPUT EXAMPLE:
+RunAsPPL     REG_DWORD    0x0
+(or value not present)
+
+WHAT TO LOOK FOR:
+- Missing or 0x0.
+
+WHY IT MATTERS:
+- LSASS memory dumpable by admin-level attackers.
+
+EXPLOITABILITY CONDITIONS:
+- Attacker needs admin/SYSTEM to dump LSASS.
+
+EVIDENCE:
+- reg query outputs.
+
+SEVERITY:
+- Medium to High.
+
+SAFE VALIDATION:
+- reg query only.
+
+--------------------------------------------------------------------------------
+
+TEST #19 - Credential Guard / Device Guard / VBS
+
+Purpose: Check virtualization-based security state.
+
+CMD:
+reg query "HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard" /s
+reg query "HKLM\SYSTEM\CurrentControlSet\Control\Lsa" /v LsaCfgFlags
+
+SAFE OUTPUT EXAMPLE:
+EnableVirtualizationBasedSecurity    REG_DWORD    0x1
+RequirePlatformSecurityFeatures      REG_DWORD    0x1
+LsaCfgFlags                          REG_DWORD    0x1
+
+VULNERABLE OUTPUT EXAMPLE:
+EnableVirtualizationBasedSecurity    REG_DWORD    0x0
+LsaCfgFlags                          REG_DWORD    0x0
+
+WHAT TO LOOK FOR:
+- VBS disabled; LsaCfgFlags = 0x0.
+
+WHY IT MATTERS:
+- Credential Guard not protecting secrets.
+
+EXPLOITABILITY CONDITIONS:
+- Requires admin/SYSTEM to dump credentials.
+
+EVIDENCE:
+- reg query outputs.
+
+SEVERITY:
+- Medium.
+
+SAFE VALIDATION:
+- reg query only.
+
+================================================================================
+SECTION 5 - DEFENDER / WDAC / APPLOCKER
+================================================================================
+
+TEST #20 - Windows Defender Exclusions
+
+Purpose: Detect overly broad exclusions.
+
+CMD:
+reg query "HKLM\SOFTWARE\Microsoft\Windows Defender\Exclusions\Paths" /s
+reg query "HKLM\SOFTWARE\Microsoft\Windows Defender\Exclusions\Extensions" /s
+reg query "HKLM\SOFTWARE\Microsoft\Windows Defender\Exclusions\Processes" /s
+
+SAFE OUTPUT EXAMPLE:
+(no exclusions or only specific vendor paths)
+
+VULNERABLE OUTPUT EXAMPLE:
+C:\    REG_DWORD    0x0
+(or entire drive excluded)
+
+WHAT TO LOOK FOR:
+- Root drive exclusions, broad extensions, common attacker paths.
+
+WHY IT MATTERS:
+- Malware/payloads not scanned.
+
+EXPLOITABILITY CONDITIONS:
+- Requires ability to drop payload in excluded path.
+
+EVIDENCE:
+- reg query outputs.
+
+SEVERITY:
+- Medium to High.
+
+SAFE VALIDATION:
+- reg query only.
+
+--------------------------------------------------------------------------------
+
+TEST #21 - Defender Policy Weakening
+
+Purpose: Check if real-time protection / tamper protection is disabled by policy.
+
+CMD:
+reg query "HKLM\SOFTWARE\Policies\Microsoft\Windows Defender" /s
+reg query "HKLM\SOFTWARE\Microsoft\Windows Defender\Real-Time Protection" /s
+
+SAFE OUTPUT EXAMPLE:
+DisableAntiSpyware              REG_DWORD    0x0
+DisableRealtimeMonitoring       REG_DWORD    0x0
+
+VULNERABLE OUTPUT EXAMPLE:
+DisableAntiSpyware              REG_DWORD    0x1
+DisableRealtimeMonitoring       REG_DWORD    0x1
+
+WHAT TO LOOK FOR:
+- DisableAntiSpyware = 0x1, DisableRealtimeMonitoring = 0x1.
+
+WHY IT MATTERS:
+- Defender disabled by policy.
+
+EXPLOITABILITY CONDITIONS:
+- Requires admin to set policy.
+
+EVIDENCE:
+- reg query outputs.
+
+SEVERITY:
+- High.
+
+SAFE VALIDATION:
+- reg query only.
+
+--------------------------------------------------------------------------------
+
+TEST #22 - WDAC / AppLocker Policy Presence
+
+Purpose: Check if application control policies exist.
+
+CMD:
+dir /s /b C:\Windows\System32\CodeIntegrity\*.p7b
+dir /s /b C:\Windows\System32\AppLocker\*.xml
+reg query "HKLM\SOFTWARE\Policies\Microsoft\Windows\SrpV2" /s
+
+SAFE OUTPUT EXAMPLE:
+C:\Windows\System32\CodeIntegrity\SiPolicy.p7b
+C:\Windows\System32\AppLocker\Exe.xml
+
+VULNERABLE OUTPUT EXAMPLE:
+File Not Found
+(no policies present)
+
+WHAT TO LOOK FOR:
+- Absence of WDAC/AppLocker policies.
+
+WHY IT MATTERS:
+- No application control; unsigned/unapproved binaries run.
+
+EXPLOITABILITY CONDITIONS:
+- Requires ability to execute binaries.
+
+EVIDENCE:
+- dir and reg query outputs.
+
+SEVERITY:
+- Medium to High (defense-in-depth gap).
+
+SAFE VALIDATION:
+- Read-only queries.
+
+================================================================================
+SECTION 6 - USER RIGHTS / NTFS / FILE SYSTEM
+================================================================================
+
+TEST #23 - Sensitive Windows User-Right Assignments
+
+Purpose: Detect dangerous user-right grants.
+
+CMD:
+secedit /export /cfg %TEMP%\secpol.inf
+type %TEMP%\secpol.inf | findstr /i "SeDebugPrivilege SeBackupPrivilege SeRestorePrivilege SeTakeOwnershipPrivilege SeImpersonatePrivilege SeAssignPrimaryTokenPrivilege SeLoadDriverPrivilege"
+
+SAFE OUTPUT EXAMPLE:
+SeDebugPrivilege = *S-1-5-32-544
+SeImpersonatePrivilege = *S-1-5-32-544,*S-1-5-18,*S-1-5-19,*S-1-5-20
+
+VULNERABLE OUTPUT EXAMPLE:
+SeDebugPrivilege = *S-1-5-32-544,*S-1-5-32-545
+(Users granted SeDebugPrivilege)
+
+WHAT TO LOOK FOR:
+- BU (S-1-5-32-545), AU (S-1-5-11), or WD (S-1-1-0) in sensitive privileges.
+
+WHY IT MATTERS:
+- SeDebugPrivilege = LSASS access; SeImpersonate = token theft; SeBackup/Restore = file read/write bypass.
+
+EXPLOITABILITY CONDITIONS:
+- Depends on privilege; often immediate escalation.
+
+EVIDENCE:
+- secpol.inf export and relevant lines.
+
+SEVERITY:
+- High to Critical.
+
+SAFE VALIDATION:
+- secedit /export only (does not modify).
+
+--------------------------------------------------------------------------------
+
+TEST #24 - NTFS ACL Inheritance Problems
+
+Purpose: Detect broken inheritance on sensitive directories.
+
+CMD:
+icacls "C:\Program Files" /t /c
+icacls "C:\Windows\System32" /t /c
+icacls "C:\ProgramData" /t /c
+
+SAFE OUTPUT EXAMPLE:
+C:\Program Files BUILTIN\Administrators:(OI)(CI)(F)
+                 NT AUTHORITY\SYSTEM:(OI)(CI)(F)
+                 BUILTIN\Users:(OI)(CI)(RX)
+
+VULNERABLE OUTPUT EXAMPLE:
+C:\Program Files\Vendor BUILTIN\Users:(OI)(CI)(M)
+(inheritance broken with weak explicit ACE)
+
+WHAT TO LOOK FOR:
+- (I) absent on child entries (broken inheritance) combined with (M)/(W)/(F) for non-admin.
+
+WHY IT MATTERS:
+- Weak explicit ACEs persist despite parent hardening.
+
+EXPLOITABILITY CONDITIONS:
+- Depends on directory role.
+
+EVIDENCE:
+- icacls output for affected paths.
+
+SEVERITY:
+- Medium to High.
+
+SAFE VALIDATION:
+- icacls review only.
+
+--------------------------------------------------------------------------------
+
+TEST #25 - Writable Privileged Application Directories
+
+Purpose: Find privileged app dirs writable by users.
+
+CMD:
+icacls "C:\Program Files" /t /c | findstr /i "(M)"
+icacls "C:\Program Files (x86)" /t /c | findstr /i "(M)"
+
+SAFE OUTPUT EXAMPLE:
+(no BU/AU/WD with M)
+
+VULNERABLE OUTPUT EXAMPLE:
+C:\Program Files\App BUILTIN\Users:(OI)(CI)(M)
+
+WHAT TO LOOK FOR:
+- (M), (W), (F) for BU/AU/WD.
+
+WHY IT MATTERS:
+- Binary/DLL/config replacement.
+
+EXPLOITABILITY CONDITIONS:
+- Privileged process must load from the directory.
+
+EVIDENCE:
+- icacls output.
+
+SEVERITY:
+- High.
+
+SAFE VALIDATION:
+- icacls review only.
+
+--------------------------------------------------------------------------------
+
+TEST #26 - Junction / Reparse-Point Attack Surface
+
+Purpose: Detect reparse points in privileged paths.
+
+CMD:
+dir /a:l /s C:\
+fsutil reparsepoint query "C:\path\to\dir"
+
+SAFE OUTPUT EXAMPLE:
+(no reparse points in privileged dirs)
+
+VULNERABLE OUTPUT EXAMPLE:
+<JUNCTION> C:\ProgramData\Link [C:\Windows\System32]
+
+WHAT TO LOOK FOR:
+- Junctions/symlinks in privileged paths pointing to attacker-writable locations.
+
+WHY IT MATTERS:
+- Redirection of privileged file operations.
+
+EXPLOITABILITY CONDITIONS:
+- Privileged process must follow the reparse point.
+
+EVIDENCE:
+- dir /a:l output, fsutil reparsepoint query.
+
+SEVERITY:
+- Medium to High.
+
+SAFE VALIDATION:
+- Read-only queries.
+
+--------------------------------------------------------------------------------
+
+TEST #27 - Hard-Link Related Security Checks
+
+Purpose: Identify potential hard-link attack surface.
+
+CMD:
+fsutil hardlink list "C:\Windows\System32\config\SAM"
+fsutil hardlink list "C:\Windows\System32\config\SYSTEM"
+
+SAFE OUTPUT EXAMPLE:
+\Windows\System32\config\SAM
+(only expected links)
+
+VULNERABLE OUTPUT EXAMPLE:
+\Windows\System32\config\SAM
+\Users\Public\sam.link
+
+WHAT TO LOOK FOR:
+- Unexpected hard links to sensitive files.
+
+WHY IT MATTERS:
+- Hard-link attacks can bypass permissions on some operations.
+
+EXPLOITABILITY CONDITIONS:
+- Requires specific privileged file operations.
+
+EVIDENCE:
+- fsutil hardlink list output.
+
+SEVERITY:
+- Medium.
+
+SAFE VALIDATION:
+- Read-only.
+
+--------------------------------------------------------------------------------
+
+TEST #28 - Alternate Data Streams (ADS)
+
+Purpose: Detect hidden data in ADS.
+
+CMD:
+dir /r /s C:\ProgramData
+dir /r /s C:\Users
+streams -s C:\ (if Sysinternals available)
+
+SAFE OUTPUT EXAMPLE:
+(no unexpected :stream entries)
+
+VULNERABLE OUTPUT EXAMPLE:
+file.txt:evil:$DATA 1024
+
+WHAT TO LOOK FOR:
+- Non-standard :$DATA streams, especially in writable dirs.
+
+WHY IT MATTERS:
+- Hidden payload storage / defense evasion.
+
+EXPLOITABILITY CONDITIONS:
+- Depends on how the stream is consumed.
+
+EVIDENCE:
+- dir /r output.
+
+SEVERITY:
+- Low to Medium (indicator).
+
+SAFE VALIDATION:
+- dir /r only.
+
+================================================================================
+SECTION 7 - SMB / RDP / WINRM
+================================================================================
+
+TEST #29 - SMB Signing Configuration
+
+Purpose: Check SMB signing enforcement.
+
+CMD:
+reg query HKLM\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters /v RequireSecuritySignature
+reg query HKLM\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters /v RequireSecuritySignature
+
+SAFE OUTPUT EXAMPLE:
+RequireSecuritySignature    REG_DWORD    0x1
+
+VULNERABLE OUTPUT EXAMPLE:
+RequireSecuritySignature    REG_DWORD    0x0
+
+WHAT TO LOOK FOR:
+- 0x0 on server side.
+
+WHY IT MATTERS:
+- NTLM relay to SMB.
+
+EXPLOITABILITY CONDITIONS:
+- Requires coercion + relay target.
+
+EVIDENCE:
+- reg query outputs.
+
+SEVERITY:
+- Medium to High.
+
+SAFE VALIDATION:
+- reg query only.
+
+--------------------------------------------------------------------------------
+
+TEST #30 - SMBv1 / Legacy SMB Exposure
+
+Purpose: Check SMBv1 state.
+
+CMD:
+reg query HKLM\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters /v SMB1
+reg query HKLM\SYSTEM\CurrentControlSet\Services\mrxsmb10 /v Start
+
+SAFE OUTPUT EXAMPLE:
+SMB1     REG_DWORD    0x0
+Start    REG_DWORD    0x4
+
+VULNERABLE OUTPUT EXAMPLE:
+SMB1     REG_DWORD    0x1
+Start    REG_DWORD    0x2
+
+WHAT TO LOOK FOR:
+- SMB1=0x1 or Start=0x2.
+
+WHY IT MATTERS:
+- EternalBlue / legacy exposure.
+
+EXPLOITABILITY CONDITIONS:
+- Unpatched or reachable SMBv1.
+
+EVIDENCE:
+- reg query outputs.
+
+SEVERITY:
+- High.
+
+SAFE VALIDATION:
+- reg query only.
+
+--------------------------------------------------------------------------------
+
+TEST #31 - SMB Administrative / Non-Administrative Share Security
+
+Purpose: Review share ACLs and permissions.
+
+CMD:
+net share
+net share <name>
+icacls "<share_path>"
+
+SAFE OUTPUT EXAMPLE:
+Share name   C$   C:\Windows   (Admin only)
+
+VULNERABLE OUTPUT EXAMPLE:
+Share name   Data   C:\Data
+Permissions: Everyone, Full
+
+WHAT TO LOOK FOR:
+- Everyone/Authenticated Users with Full/Change.
+
+WHY IT MATTERS:
+- Unauthorized data access/modification.
+
+EXPLOITABILITY CONDITIONS:
+- Network reachability.
+
+EVIDENCE:
+- net share output, icacls on share path.
+
+SEVERITY:
+- Medium to High.
+
+SAFE VALIDATION:
+- net share (read-only).
+
+--------------------------------------------------------------------------------
+
+TEST #32 - RDP Security / NLA Configuration
+
+Purpose: Check RDP NLA and security layer.
+
+CMD:
+reg query "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" /v UserAuthentication
+reg query "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" /v SecurityLayer
+reg query "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" /v MinEncryptionLevel
+
+SAFE OUTPUT EXAMPLE:
+UserAuthentication    REG_DWORD    0x1
+SecurityLayer         REG_DWORD    0x2
+MinEncryptionLevel    REG_DWORD    0x3
+
+VULNERABLE OUTPUT EXAMPLE:
+UserAuthentication    REG_DWORD    0x0
+SecurityLayer         REG_DWORD    0x0
+MinEncryptionLevel    REG_DWORD    0x1
+
+WHAT TO LOOK FOR:
+- NLA not required; weak encryption.
+
+WHY IT MATTERS:
+- Pre-auth attacks; credential exposure.
+
+EXPLOITABILITY CONDITIONS:
+- Network access to RDP.
+
+EVIDENCE:
+- reg query outputs.
+
+SEVERITY:
+- Medium to High.
+
+SAFE VALIDATION:
+- reg query only.
+
+--------------------------------------------------------------------------------
+
+TEST #33 - RDP Network Exposure
+
+Purpose: Check firewall rules exposing RDP.
+
+CMD:
+netsh advfirewall firewall show rule name=all | findstr /i "3389"
+netsh advfirewall firewall show rule name=all | findstr /i "Remote Desktop"
+
+SAFE OUTPUT EXAMPLE:
+LocalPort: 3389
+RemoteIP: 10.0.0.0/24
+
+VULNERABLE OUTPUT EXAMPLE:
+LocalPort: 3389
+RemoteIP: Any
+
+WHAT TO LOOK FOR:
+- RDP exposed to Any/Internet.
+
+WHY IT MATTERS:
+- Brute force / exploitation surface.
+
+EXPLOITABILITY CONDITIONS:
+- Reachable network path.
+
+EVIDENCE:
+- netsh firewall output.
+
+SEVERITY:
+- Medium to High.
+
+SAFE VALIDATION:
+- netsh show (read-only).
+
+--------------------------------------------------------------------------------
+
+TEST #34 - WinRM Listener and Security Configuration
+
+Purpose: Check WinRM listeners and auth settings.
+
+CMD:
+winrm enumerate winrm/config/listener
+winrm get winrm/config/service
+winrm get winrm/config/service/auth
+winrm get winrm/config/client/auth
+
+SAFE OUTPUT EXAMPLE:
+Listener: Transport=HTTPS, Port=5986, CertificateThumbprint=...
+Auth: Basic=false, Kerberos=true, Negotiate=true
+
+VULNERABLE OUTPUT EXAMPLE:
+Listener: Transport=HTTP, Port=5985
+Auth: Basic=true, AllowUnencrypted=true
+
+WHAT TO LOOK FOR:
+- HTTP listeners, Basic auth enabled, AllowUnencrypted=true.
+
+WHY IT MATTERS:
+- Credential exposure / lateral movement.
+
+EXPLOITABILITY CONDITIONS:
+- Network access to WinRM.
+
+EVIDENCE:
+- winrm get/enumerate output.
+
+SEVERITY:
+- Medium to High.
+
+SAFE VALIDATION:
+- winrm get (read-only).
+
+--------------------------------------------------------------------------------
+
+TEST #35 - Windows Firewall Overly Broad Inbound Rules
+
+Purpose: Identify Any-Any inbound allow rules.
+
+CMD:
+netsh advfirewall firewall show rule name=all dir=in | findstr /i "Action:Allow"
+netsh advfirewall firewall show rule name=all dir=in | findstr /i "RemoteIP:Any"
+
+SAFE OUTPUT EXAMPLE:
+RemoteIP: 10.0.0.0/24
+
+VULNERABLE OUTPUT EXAMPLE:
+RemoteIP: Any
+LocalPort: Any
+Action: Allow
+
+WHAT TO LOOK FOR:
+- Any-Any allow rules on sensitive ports.
+
+WHY IT MATTERS:
+- Expanded attack surface.
+
+EXPLOITABILITY CONDITIONS:
+- Depends on exposed service.
+
+EVIDENCE:
+- netsh output.
+
+SEVERITY:
+- Low to High depending on port.
+
+SAFE VALIDATION:
+- netsh show only.
+
+================================================================================
+SECTION 8 - HTTP.SYS / IIS
+================================================================================
+
+TEST #36 - HTTP.sys URL ACLs
+
+Purpose: Check URL reservations for weak principals.
+
+CMD:
+netsh http show urlacl
+
+SAFE OUTPUT EXAMPLE:
+Reserved URL : http://+:80/MyApp/
+    User: NT AUTHORITY\SYSTEM
+
+VULNERABLE OUTPUT EXAMPLE:
+Reserved URL : http://+:80/
+    User: BUILTIN\Users
+
+WHAT TO LOOK FOR:
+- Broad URL reservations owned by Users/Everyone.
+
+WHY IT MATTERS:
+- Unauthorized registration/binding.
+
+EXPLOITABILITY CONDITIONS:
+- Requires ability to bind to the URL.
+
+EVIDENCE:
+- netsh http show urlacl output.
+
+SEVERITY:
+- Medium to High.
+
+SAFE VALIDATION:
+- netsh http show only.
+
+--------------------------------------------------------------------------------
+
+TEST #37 - HTTP.sys SSL Bindings
+
+Purpose: Check SSL certificate bindings.
+
+CMD:
+netsh http show sslcert
+
+SAFE OUTPUT EXAMPLE:
+IP:port : 0.0.0.0:443
+Certificate Hash : <hash>
+Application ID : {...}
+
+VULNERABLE OUTPUT EXAMPLE:
+IP:port : 0.0.0.0:443
+Certificate Hash : <weak/expired cert>
+
+WHAT TO LOOK FOR:
+- Expired, weak, or missing certs; duplicate bindings.
+
+WHY IT MATTERS:
+- Weak TLS / MITM exposure.
+
+EXPLOITABILITY CONDITIONS:
+- Network position.
+
+EVIDENCE:
+- netsh http show sslcert output.
+
+SEVERITY:
+- Medium.
+
+SAFE VALIDATION:
+- netsh http show only.
+
+--------------------------------------------------------------------------------
+
+TEST #38 - HTTP.sys Service State / Listeners
+
+Purpose: Check HTTP.sys service state and listeners.
+
+CMD:
+sc query http
+netsh http show servicestate
+
+SAFE OUTPUT EXAMPLE:
+STATE : 4 RUNNING
+(no unexpected listeners)
+
+VULNERABLE OUTPUT EXAMPLE:
+STATE : 1 STOPPED
+(or unexpected process listening)
+
+WHAT TO LOOK FOR:
+- Unexpected processes owning HTTP.sys requests.
+
+WHY IT MATTERS:
+- Unauthorized listener / service hijack.
+
+EXPLOITABILITY CONDITIONS:
+- Depends on process identity.
+
+EVIDENCE:
+- sc query, netsh http show servicestate.
+
+SEVERITY:
+- Medium to High.
+
+SAFE VALIDATION:
+- Read-only queries.
+
+--------------------------------------------------------------------------------
+
+TEST #39 - IIS Application-Pool Identity
+
+Purpose: Check IIS app pool identities.
+
+CMD:
+%windir%\system32\inetsrv\appcmd list apppool /text:name,processModel.identityType
+
+SAFE OUTPUT EXAMPLE:
+APPPOOL "DefaultAppPool"
+    processModel.identityType:"ApplicationPoolIdentity"
+
+VULNERABLE OUTPUT EXAMPLE:
+APPPOOL "LegacyPool"
+    processModel.identityType:"LocalSystem"
+
+WHAT TO LOOK FOR:
+- LocalSystem / privileged domain accounts.
+
+WHY IT MATTERS:
+- Web RCE inherits high privilege.
+
+EXPLOITABILITY CONDITIONS:
+- Requires web app vulnerability.
+
+EVIDENCE:
+- appcmd output.
+
+SEVERITY:
+- High.
+
+SAFE VALIDATION:
+- appcmd list only.
+
+--------------------------------------------------------------------------------
+
+TEST #40 - IIS Handler Mappings
+
+Purpose: Review handler mappings for risky handlers.
+
+CMD:
+%windir%\system32\inetsrv\appcmd list config /section:handlers
+
+SAFE OUTPUT EXAMPLE:
+(only expected handlers: ASP.NET, StaticFile)
+
+VULNERABLE OUTPUT EXAMPLE:
+handler name="Unsafe" path="*.xyz" verb="*" modules="IsapiModule" scriptProcessor="C:\evil.dll"
+
+WHAT TO LOOK FOR:
+- Custom/unknown handlers pointing to writable paths.
+
+WHY IT MATTERS:
+- Execution of arbitrary code via web requests.
+
+EXPLOITABILITY CONDITIONS:
+- Handler must be reachable and process requests.
+
+EVIDENCE:
+- appcmd config output.
+
+SEVERITY:
+- High.
+
+SAFE VALIDATION:
+- appcmd list config only.
+
+--------------------------------------------------------------------------------
+
+TEST #41 - IIS Native Modules
+
+Purpose: Review native modules loaded by IIS.
+
+CMD:
+%windir%\system32\inetsrv\appcmd list config /section:globalModules
+
+SAFE OUTPUT EXAMPLE:
+(only Microsoft modules from System32\inetsrv)
+
+VULNERABLE OUTPUT EXAMPLE:
+<add name="Custom" image="C:\Users\Public\evil.dll" />
+
+WHAT TO LOOK FOR:
+- Non-Microsoft modules in writable paths.
+
+WHY IT MATTERS:
+- Code execution in IIS worker process.
+
+EXPLOITABILITY CONDITIONS:
+- Requires module to load.
+
+EVIDENCE:
+- appcmd output.
+
+SEVERITY:
+- High.
+
+SAFE VALIDATION:
+- appcmd list config only.
+
+--------------------------------------------------------------------------------
+
+TEST #42 - IIS Authentication Configuration
+
+Purpose: Check enabled authentication methods.
+
+CMD:
+%windir%\system32\inetsrv\appcmd list config /section:authentication
+
+SAFE OUTPUT EXAMPLE:
+windowsAuthentication enabled="true"
+anonymousAuthentication enabled="false"
+
+VULNERABLE OUTPUT EXAMPLE:
+basicAuthentication enabled="true"
+anonymousAuthentication enabled="true"
+
+WHAT TO LOOK FOR:
+- Basic auth enabled (cleartext), anonymous on sensitive apps.
+
+WHY IT MATTERS:
+- Credential exposure / unauthorized access.
+
+EXPLOITABILITY CONDITIONS:
+- Network access + weak credentials.
+
+EVIDENCE:
+- appcmd output.
+
+SEVERITY:
+- Medium to High.
+
+SAFE VALIDATION:
+- appcmd list config only.
+
+--------------------------------------------------------------------------------
+
+TEST #43 - IIS Request Filtering
+
+Purpose: Check request filtering limits.
+
+CMD:
+%windir%\system32\inetsrv\appcmd list config /section:requestFiltering
+
+SAFE OUTPUT EXAMPLE:
+allowDoubleEscaping="false"
+maxAllowedContentLength="30000000"
+
+VULNERABLE OUTPUT EXAMPLE:
+allowDoubleEscaping="true"
+allowHighBitCharacters="true"
+
+WHAT TO LOOK FOR:
+- allowDoubleEscaping=true, high limits, disabled filtering.
+
+WHY IT MATTERS:
+- Bypass of filtering / DoS.
+
+EXPLOITABILITY CONDITIONS:
+- Requires specific attack vector.
+
+EVIDENCE:
+- appcmd output.
+
+SEVERITY:
+- Medium.
+
+SAFE VALIDATION:
+- appcmd list config only.
+
+--------------------------------------------------------------------------------
+
+TEST #44 - IIS Webroot / Application ACLs
+
+Purpose: Check ACLs on IIS webroots.
+
+CMD:
+icacls "C:\inetpub\wwwroot"
+icacls "C:\inetpub\wwwroot" /t /c
+
+SAFE OUTPUT EXAMPLE:
+C:\inetpub\wwwroot BUILTIN\Administrators:(F)
+                   NT AUTHORITY\SYSTEM:(F)
+                   BUILTIN\Users:(RX)
+
+VULNERABLE OUTPUT EXAMPLE:
+C:\inetpub\wwwroot BUILTIN\Users:(OI)(CI)(M)
+
+WHAT TO LOOK FOR:
+- (M)/(W)/(F) for non-admin on webroot.
+
+WHY IT MATTERS:
+- Web shell upload / defacement.
+
+EXPLOITABILITY CONDITIONS:
+- Write access + web execution.
+
+EVIDENCE:
+- icacls output.
+
+SEVERITY:
+- High.
+
+SAFE VALIDATION:
+- icacls review only.
+
+================================================================================
+SECTION 9 - WMI / AD / AUDIT
+================================================================================
+
+TEST #45 - WMI Permanent Event Subscriptions
+
+Purpose: Detect persistence via WMI event subscriptions.
+
+CMD:
+wmic /namespace:\\root\subscription path __EventFilter get Name,Query
+wmic /namespace:\\root\subscription path CommandLineEventConsumer get Name,CommandLineTemplate
+wmic /namespace:\\root\subscription path __FilterToConsumerBinding get Filter,Consumer
+
+SAFE OUTPUT EXAMPLE:
+(no instances or only Microsoft default)
+
+VULNERABLE OUTPUT EXAMPLE:
+Name: EvilFilter
+CommandLineTemplate: C:\Users\Public\evil.exe
+
+WHAT TO LOOK FOR:
+- Non-default filters/consumers/bindings.
+
+WHY IT MATTERS:
+- WMI persistence executes on events.
+
+EXPLOITABILITY CONDITIONS:
+- Requires admin/SYSTEM to create.
+
+EVIDENCE:
+- wmic outputs.
+
+SEVERITY:
+- High.
+
+SAFE VALIDATION:
+- wmic get only.
+
+--------------------------------------------------------------------------------
+
+TEST #46 - LDAP / AD Security Configuration
+
+Purpose: Check LDAP signing/channel binding (see Test #12/#13).
+
+CMD:
+reg query "HKLM\SYSTEM\CurrentControlSet\Services\NTDS\Parameters" /v LDAPServerIntegrity
+reg query "HKLM\SYSTEM\CurrentControlSet\Services\NTDS\Parameters" /v LdapEnforceChannelBinding
+
+SAFE OUTPUT EXAMPLE:
+LDAPServerIntegrity       REG_DWORD    0x2
+LdapEnforceChannelBinding REG_DWORD    0x2
+
+VULNERABLE OUTPUT EXAMPLE:
+LDAPServerIntegrity       REG_DWORD    0x0
+LdapEnforceChannelBinding REG_DWORD    0x0
+
+WHAT TO LOOK FOR:
+- 0x0 or missing.
+
+WHY IT MATTERS:
+- LDAP/LDAPS relay.
+
+EXPLOITABILITY CONDITIONS:
+- Coercion + relay.
+
+EVIDENCE:
+- reg query outputs.
+
+SEVERITY:
+- High (DC).
+
+SAFE VALIDATION:
+- reg query only.
+
+--------------------------------------------------------------------------------
+
+TEST #47 - AD Domain-Trust Analysis
+
+Purpose: Enumerate and assess domain trusts.
+
+CMD:
+nltest /domain_trusts
+nltest /domain_trusts /all_trusts
+netdom trust <domain> /domain:<other> /verify
+
+SAFE OUTPUT EXAMPLE:
+Trusted domain list with expected trusts only.
+
+VULNERABLE OUTPUT EXAMPLE:
+Unexpected external/forest trust with weak direction/attributes.
+
+WHAT TO LOOK FOR:
+- Unexpected trusts, bidirectional trusts to untrusted domains.
+
+WHY IT MATTERS:
+- Lateral movement / trust abuse.
+
+EXPLOITABILITY CONDITIONS:
+- Depends on trust attributes and access.
+
+EVIDENCE:
+- nltest / netdom outputs.
+
+SEVERITY:
+- Medium to High.
+
+SAFE VALIDATION:
+- nltest /domain_trusts (read-only).
+
+--------------------------------------------------------------------------------
+
+TEST #48 - Domain-Controller / FSMO Security Checks
+
+Purpose: Identify DCs and FSMO role holders.
+
+CMD:
+nltest /dsgetdc:<domain>
+netdom query fsmo
+nltest /dclist:<domain>
+
+SAFE OUTPUT EXAMPLE:
+DC: \\DC01.domain.local
+FSMO roles on expected DCs.
+
+VULNERABLE OUTPUT EXAMPLE:
+FSMO roles on unexpected/unpatched DC.
+
+WHAT TO LOOK FOR:
+- FSMO on non-hardened DCs.
+
+WHY IT MATTERS:
+- Compromise of FSMO holder = domain impact.
+
+EXPLOITABILITY CONDITIONS:
+- Requires DC compromise.
+
+EVIDENCE:
+- netdom / nltest outputs.
+
+SEVERITY:
+- Informational to High.
+
+SAFE VALIDATION:
+- netdom query (read-only).
+
+--------------------------------------------------------------------------------
+
+TEST #49 - Audit-Policy Gaps
+
+Purpose: Review audit policy coverage.
+
+CMD:
+auditpol /get /category:*
+auditpol /get /category:"Logon/Logoff"
+auditpol /get /category:"Object Access"
+
+SAFE OUTPUT EXAMPLE:
+Logon           Success and Failure
+Process Creation Success
+
+VULNERABLE OUTPUT EXAMPLE:
+Logon           No Auditing
+Process Creation No Auditing
+
+WHAT TO LOOK FOR:
+- "No Auditing" on critical categories.
+
+WHY IT MATTERS:
+- Detection gaps.
+
+EXPLOITABILITY CONDITIONS:
+- N/A (detection gap).
+
+EVIDENCE:
+- auditpol output.
+
+SEVERITY:
+- Low to Medium.
+
+SAFE VALIDATION:
+- auditpol /get only.
+
+--------------------------------------------------------------------------------
+
+TEST #50 - Security-Event-Log Retention / Detection Gaps
+
+Purpose: Check log sizes and retention.
+
+CMD:
+wevtutil gl Security
+wevtutil gl System
+wevtutil gl Application
+
+SAFE OUTPUT EXAMPLE:
+maxSize: 1073741824
+retention: true
+autoBackup: false
+
+VULNERABLE OUTPUT EXAMPLE:
+maxSize: 20971520 (20 MB)
+retention: false
+
+WHAT TO LOOK FOR:
+- Small log size, retention=false.
+
+WHY IT MATTERS:
+- Logs overwritten; forensic/detection gaps.
+
+EXPLOITABILITY CONDITIONS:
+- N/A (detection gap).
+
+EVIDENCE:
+- wevtutil gl outputs.
+
+SEVERITY:
+- Low to Medium.
+
+SAFE VALIDATION:
+- wevtutil gl only.
+
+================================================================================
+ADVANCED WINDOWS ATTACK-PATH CORRELATION
+================================================================================
+
+EXAMPLE 1 - Service Binary Hijack to SYSTEM
+Privileged service (LocalSystem)
+  -> sc qc shows unquoted BINARY_PATH_NAME with spaces
+  -> icacls shows writable intermediate directory for BU/AU
+  -> low-priv user places malicious exe in intermediate dir
+  -> service restart (reboot/dependency/failure action)
+  -> Windows resolves shorter path first
+  -> attacker exe executes as NT AUTHORITY\SYSTEM
+
+EXAMPLE 2 - COM Hijack to Privileged Process
+Privileged process (SYSTEM/admin) loads CLSID {X}
+  -> Procmon shows HKCU\...\CLSID\{X}\InprocServer32 = NAME NOT FOUND
+  -> attacker creates HKCU key + malicious DLL
+  -> privileged process instantiates CLSID again
+  -> Windows loads HKCU DLL (priority over HKLM)
+  -> attacker DLL executes in privileged process
+
+EXAMPLE 3 - Weak Service DACL + Failure Action
+sc sdshow shows BU with CC/RP/WP
+  -> sc qfailure shows COMMAND_LINE pointing to writable path
+  -> attacker modifies binpath or failure command
+  -> triggers service failure/restart
+  -> payload executes as service account (SYSTEM)
+
+EXAMPLE 4 - IIS AppPool + Writable Webroot
+appcmd shows pool identity = LocalSystem or privileged user
+  -> icacls webroot shows BU with (M)
+  -> attacker uploads web shell
+  -> code executes in IIS worker process as privileged identity
+
+================================================================================
+FINAL REFERENCE TABLE (PLAIN TEXT)
+================================================================================
+
+Test | Command | Secure Indicator | Vulnerable Indicator | Impact | Severity
+-----|---------|------------------|----------------------|--------|---------
+1 | sc sdshow <svc> | No write ACEs for BU/IU/WD | CC/RP/WP for BU | Service config mod | High-Crit
+2 | icacls <svc binary> | Users RX only | Users M/W/F | Binary replacement | Crit
+3 | icacls <parent dir> | Users RX only | Users M/W/F | DLL/binary planting | High-Crit
+4 | wmic service get ... | Quoted or no writable dirs | Unquoted + writable | Binary hijack | High-Crit
+5 | reg query ServiceDll | System32 path | Writable path | SYSTEM DLL load | Crit
+6 | sc qfailure | Empty COMMAND_LINE | Writable payload | Failure-action RCE | High
+7 | schtasks /query /v | SYSTEM task, secure binary | Writable binary/task | Scheduled RCE | High-Crit
+8 | icacls <task binary> | Users RX only | Users M/W/F | Task payload replace | High
+9 | reg query IFEO /s | No Debugger | Debugger=cmd.exe | SYSTEM at lock screen | Crit
+10 | reg query Winlogon | Standard values | Extra binaries | Persistence/RCE | Crit
+11 | reg query AppInit_DLLs | Empty, Load=0x0 | DLL set, Load=0x1 | Global DLL inject | High-Crit
+12 | reg query HKLM CLSID | System32 paths | Writable paths | COM hijack | High-Crit
+13 | reg query HKCU CLSID | No user CLSIDs | HKCU CLSID writable | COM hijack | High
+14 | reg query App Paths | System32 paths | Writable paths | Binary hijack | Med-High
+15 | echo %PATH% | No writable dirs | Writable dir in PATH | Search-order hijack | Med-High
+16 | reg query AlwaysInstallElevated | 0x0 or absent | 0x1 both hives | SYSTEM MSI | Crit
+17 | reg query Lsa | RunAsPPL=0x1, LmCompat>=3 | 0x0, weak values | Credential theft | Med-Crit
+18 | reg query RunAsPPL | 0x1 | 0x0/absent | LSASS dump | Med-High
+19 | reg query DeviceGuard | VBS=0x1, LsaCfgFlags=0x1 | 0x0 | No Cred Guard | Med
+20 | reg query Defender Exclusions | None/specific | Broad drive exclusion | AV bypass | Med-High
+21 | reg query Defender policy | Disable=0x0 | Disable=0x1 | AV disabled | High
+22 | dir WDAC/AppLocker | Policies present | None | No app control | Med-High
+23 | secedit /export | No BU/AU in privs | BU/AU in SeDebug etc | Privilege abuse | High-Crit
+24 | icacls /t /c | Inheritance intact | Broken + weak ACE | Persistent weak ACL | Med-High
+25 | icacls Program Files /t | Users RX | Users M/W/F | Binary replacement | High
+26 | dir /a:l | No reparse in priv paths | Junction to writable | Redirection | Med-High
+27 | fsutil hardlink list | Expected links only | Unexpected links | Hardlink attack | Med
+28 | dir /r | No unexpected ADS | Hidden :$DATA | Payload hiding | Low-Med
+29 | reg query LanmanServer | Require=0x1 | 0x0 | NTLM relay | Med-High
+30 | reg query SMB1 | 0x0 | 0x1 | EternalBlue | High
+31 | net share | Admin-only shares | Everyone Full | Data exposure | Med-High
+32 | reg query RDP-Tcp | NLA=0x1, Layer=0x2 | 0x0 | Pre-auth attacks | Med-High
+33 | netsh advfirewall RDP | Scoped RemoteIP | RemoteIP Any | Brute force surface | Med-High
+34 | winrm get config | HTTPS, Basic=false | HTTP, Basic=true | Cred exposure | Med-High
+35 | netsh advfirewall in | Scoped rules | Any-Any allow | Broad exposure | Low-High
+36 | netsh http show urlacl | SYSTEM-owned | Users-owned broad | URL hijack | Med-High
+37 | netsh http show sslcert | Valid certs | Weak/expired | MITM | Med
+38 | netsh http show servicestate | Expected processes | Unexpected process | Listener hijack | Med-High
+39 | appcmd list apppool | AppPoolIdentity | LocalSystem | Web RCE high priv | High
+40 | appcmd handlers | Expected handlers | Custom writable | Web RCE | High
+41 | appcmd globalModules | MS modules only | Custom writable | Web RCE | High
+42 | appcmd authentication | Windows auth, anon off | Basic/anon on | Cred exposure | Med-High
+43 | appcmd requestFiltering | Strict limits | DoubleEscaping=true | Bypass/DoS | Med
+44 | icacls webroot | Users RX | Users M/W/F | Web shell upload | High
+45 | wmic subscription | No custom | Custom filter/consumer | WMI persistence | High
+46 | reg query NTDS | 0x2/0x2 | 0x0/0x0 | LDAP relay | High
+47 | nltest /domain_trusts | Expected trusts | Unexpected trusts | Lateral movement | Med-High
+48 | netdom query fsmo | Expected DCs | Unexpected DC | Domain impact | Info-High
+49 | auditpol /get | Success+Failure | No Auditing | Detection gap | Low-Med
+50 | wevtutil gl Security | Large, retention=true | Small, retention=false | Log gaps | Low-Med
+
+================================================================================
+END OF CHECKLIST
+================================================================================
