@@ -1,0 +1,702 @@
+============================================================
+CICS MISCONFIGURATION CHECKLIST - VALID EVEN WITH ADMIN RIGHTS
+QA Environment: CICSTT06
+Total Checks: 35
+Severity: Medium, High, Critical ONLY
+Rule: ONLY CEMT INQUIRE - NO MODIFICATIONS
+============================================================
+
+NOTE:
+Admin rights do NOT make these findings invalid. These are
+configuration-level weaknesses that remain exploitable even
+with elevated access. Report them for defense-in-depth,
+audit, and compliance reasons.
+
+------------------------------------------------------------
+[01] CEMT INQUIRE SYSTEM
+------------------------------------------------------------
+Look For:
+  - CONFDATA = SHOW
+  - SEC = NO
+  - XCMD = YES + CMDSEC = NO
+  - DUMPING = SYSD
+  - TRACESIZE > 0
+
+Vulnerability If Found:
+  - CONFDATA=SHOW -> Passwords/tokens exposed in dumps and traces
+  - SEC=NO -> Security completely disabled; no authentication
+  - XCMD=YES + CMDSEC=NO -> Command security disabled
+  - DUMPING=SYSD -> Sensitive data being dumped
+  - TRACESIZE > 0 with CONFDATA=SHOW -> Data leak via trace
+
+Why Valid Even With Admin Rights:
+  - Security is off for EVERYONE, not just admin
+  - Any user can execute transactions without auth
+  - Audit trail is absent (compliance violation)
+  - Insider threat: Admin can misuse without logs
+
+Risk: CRITICAL
+
+------------------------------------------------------------
+[02] CEMT INQUIRE TCLASS
+------------------------------------------------------------
+Look For:
+  - Protection value (1, 2, 3)
+  - Max tasks value
+
+Vulnerability If Found:
+  - Protection(1) -> Transactions execute without authentication
+  - Protection field missing -> Default low security
+
+Why Valid Even With Admin Rights:
+  - Transaction hijacking possible by non-admin users
+  - No user-level authorization enforcement
+  - Compliance requirements violated
+
+Risk: HIGH
+
+------------------------------------------------------------
+[03] CEMT INQUIRE TRAN
+------------------------------------------------------------
+Look For:
+  - Disabled transactions
+  - REMOTE transactions
+  - TWA size (large TWA = data exposure)
+  - User IDs
+
+Vulnerability If Found:
+  - Sensitive transactions enabled
+  - REMOTE transactions without auth
+  - Large TWA = memory data leak
+
+Why Valid Even With Admin Rights:
+  - Sensitive data exposure affects all users
+  - REMOTE transactions bypass local security
+  - Audit gap in transaction execution
+
+Risk: HIGH
+
+------------------------------------------------------------
+[04] CEMT INQUIRE PROGRAM
+------------------------------------------------------------
+Look For:
+  - CEDA, CECI, CEMT, CEDF loaded
+  - Language (COBOL, Assembler)
+  - Status (Enabled)
+
+Vulnerability If Found:
+  - CEDA/CECI/CEMT accessible = Configuration modification
+  - Assembler programs = Hard to audit
+  - Unauthorized programs loaded
+
+Why Valid Even With Admin Rights:
+  - Config modification possible without proper change control
+  - No audit trail for sensitive program access
+  - RCE surface remains open
+  - Insider threat unmonitored
+
+Risk: CRITICAL
+
+------------------------------------------------------------
+[05] CEMT INQUIRE FILE
+------------------------------------------------------------
+Look For:
+  - Open files
+  - READ/WRITE access
+  - REMOTE files
+  - Sensitive file names
+
+Vulnerability If Found:
+  - Sensitive files accessible
+  - Write access on production files
+  - Remote file access without auth
+
+Why Valid Even With Admin Rights:
+  - Data integrity risk (unauthorized writes)
+  - No file-level audit
+  - Compliance violation (data access controls)
+
+Risk: HIGH
+
+------------------------------------------------------------
+[06] CEMT INQUIRE TASK
+------------------------------------------------------------
+Look For:
+  - Other users' tasks
+  - User IDs
+  - Terminal IDs
+  - Transaction IDs
+
+Vulnerability If Found:
+  - Other users' activity visible
+  - User ID enumeration possible
+  - Terminal hijacking possible
+
+Why Valid Even With Admin Rights:
+  - Privacy violation (user activity visible)
+  - No access control on task visibility
+  - Insider threat: Admin can monitor users
+
+Risk: HIGH
+
+------------------------------------------------------------
+[07] CEMT INQUIRE TERMINAL
+------------------------------------------------------------
+Look For:
+  - Terminal IDs
+  - User IDs associated
+  - Status (INSERVICE/OUTSERVICE)
+
+Vulnerability If Found:
+  - Unauthorized terminal access
+  - User-terminal mapping exposed
+
+Why Valid Even With Admin Rights:
+  - Terminal session hijacking possible
+  - No audit on terminal access
+  - Privacy violation
+
+Risk: MEDIUM
+
+------------------------------------------------------------
+[08] CEMT INQUIRE DB2CONN
+------------------------------------------------------------
+Look For:
+  - AUTHTYPE (USERID/TERM/SIGN)
+  - Plan name
+  - Thread limits
+
+Vulnerability If Found:
+  - AUTHTYPE(USERID) -> User ID spoofing
+  - AUTHTYPE(TERM) -> Terminal spoofing
+  - No SIGN auth = Weak security
+
+Why Valid Even With Admin Rights:
+  - User ID spoofing possible
+  - DB2 access without proper auth
+  - No audit trail for DB2 access
+  - Compliance violation (SOX, HIPAA, etc.)
+
+Risk: CRITICAL
+
+------------------------------------------------------------
+[09] CEMT INQUIRE DB2ENTRY
+------------------------------------------------------------
+Look For:
+  - AUTHID
+  - AUTHTYPE
+  - Plan names
+
+Vulnerability If Found:
+  - Weak auth type
+  - Exposed plan names
+
+Why Valid Even With Admin Rights:
+  - Unauthorized DB2 access possible
+  - No audit on DB2 entry usage
+
+Risk: HIGH
+
+------------------------------------------------------------
+[10] CEMT INQUIRE DB2TRAN
+------------------------------------------------------------
+Look For:
+  - Transactions linked to DB2
+  - Plan names
+
+Vulnerability If Found:
+  - Sensitive transactions exposed
+  - DB2 access without auth
+
+Why Valid Even With Admin Rights:
+  - DB2 access audit gap
+  - Compliance violation
+
+Risk: MEDIUM
+
+------------------------------------------------------------
+[11] CEMT INQUIRE TCPIPSERVICE
+------------------------------------------------------------
+Look For:
+  - Open ports
+  - SSL (YES/NO)
+  - AUTHENTICATE (NONE/BASIC/CERTIFICATE)
+
+Vulnerability If Found:
+  - AUTHENTICATE=NONE -> No auth required
+  - SSL=NO -> Unencrypted traffic
+  - Port 80/8080 open = Network exposure
+
+Why Valid Even With Admin Rights:
+  - External attacker can access without auth
+  - Data in transit unencrypted
+  - Network exposure remains open
+  - Compliance violation (encryption required)
+
+Risk: CRITICAL
+
+------------------------------------------------------------
+[12] CEMT INQUIRE PIPELINE
+------------------------------------------------------------
+Look For:
+  - Config file names
+  - WSDL URLs
+  - XSS/SQLi surface
+
+Vulnerability If Found:
+  - Web service exposed without auth
+  - Config files accessible
+  - SQLi/XSS surface
+
+Why Valid Even With Admin Rights:
+  - Web attack surface remains open
+  - No input validation on web services
+
+Risk: HIGH
+
+------------------------------------------------------------
+[13] CEMT INQUIRE URIMAP
+------------------------------------------------------------
+Look For:
+  - URI mappings
+  - Host names
+  - Scheme (HTTP/HTTPS)
+
+Vulnerability If Found:
+  - HTTP (not HTTPS) mapping
+  - Internal host names exposed
+  - Path traversal possible
+
+Why Valid Even With Admin Rights:
+  - Data in transit unencrypted
+  - Internal host disclosure aids attackers
+
+Risk: HIGH
+
+------------------------------------------------------------
+[14] CEMT INQUIRE WEBSERVICE
+------------------------------------------------------------
+Look For:
+  - WSDL URLs
+  - Validation (YES/NO)
+  - Pipeline names
+
+Vulnerability If Found:
+  - Validation=NO -> Malformed input accepted
+  - WSDL exposed
+  - Unauthenticated access
+
+Why Valid Even With Admin Rights:
+  - Injection attacks possible
+  - No input validation
+  - Audit gap
+
+Risk: MEDIUM
+
+------------------------------------------------------------
+[15] CEMT INQUIRE JVMSERVER
+------------------------------------------------------------
+Look For:
+  - Java version
+  - JVM profile
+  - Thread limits
+
+Vulnerability If Found:
+  - Old Java = Known CVEs
+  - Weak JVM profile
+  - No thread limits = DoS
+
+Why Valid Even With Admin Rights:
+  - Known CVEs exploitable
+  - DoS possible
+  - No audit on JVM usage
+
+Risk: HIGH
+
+------------------------------------------------------------
+[16] CEMT INQUIRE MQCONN
+------------------------------------------------------------
+Look For:
+  - Queue manager name
+  - MQ security
+  - Auth type
+
+Vulnerability If Found:
+  - MQ without auth
+  - Queue manager exposed
+  - Message injection possible
+
+Why Valid Even With Admin Rights:
+  - Message injection possible
+  - No audit on MQ access
+  - Data integrity risk
+
+Risk: HIGH
+
+------------------------------------------------------------
+[17] CEMT INQUIRE LIBRARY
+------------------------------------------------------------
+Look For:
+  - Loaded libraries
+  - Dataset names
+  - Status
+
+Vulnerability If Found:
+  - Sensitive libraries exposed
+  - Write access to libraries = RCE
+
+Why Valid Even With Admin Rights:
+  - RCE surface open
+  - No audit on library access
+  - Insider threat unmonitored
+
+Risk: CRITICAL
+
+------------------------------------------------------------
+[18] CEMT INQUIRE TDQUEUE
+------------------------------------------------------------
+Look For:
+  - Queue destinations
+  - INTRDR (JCL submission)
+  - REMOTE queues
+
+Vulnerability If Found:
+  - INTRDR exposed = JCL submit
+  - Sensitive data queue
+  - Remote queue access
+
+Why Valid Even With Admin Rights:
+  - JCL submission = RCE surface
+  - No audit on TD queue usage
+  - Compliance violation
+
+Risk: HIGH
+
+------------------------------------------------------------
+[19] CEMT INQUIRE TSQUEUE
+------------------------------------------------------------
+Look For:
+  - Data storage
+  - REMOTE vs LOCAL
+  - Pool names
+
+Vulnerability If Found:
+  - Sensitive TSQ exposed
+  - Remote access possible
+
+Why Valid Even With Admin Rights:
+  - Data exposure
+  - No audit on TSQ usage
+
+Risk: HIGH
+
+------------------------------------------------------------
+[20] CEMT INQUIRE TRACEDEST
+------------------------------------------------------------
+Look For:
+  - Dataset names
+  - Sensitive paths
+
+Vulnerability If Found:
+  - Trace dataset exposed
+  - Sensitive path disclosure
+
+Why Valid Even With Admin Rights:
+  - Data leak via trace
+  - Path disclosure aids attackers
+
+Risk: MEDIUM
+
+------------------------------------------------------------
+[21] CEMT INQUIRE TRACEFLAG
+------------------------------------------------------------
+Look For:
+  - Tracing on/off
+  - SYS/STA/SPE
+
+Vulnerability If Found:
+  - Tracing OFF = No audit
+  - Tracing ON with CONFDATA=SHOW = Data leak
+
+Why Valid Even With Admin Rights:
+  - No audit trail (compliance violation)
+  - Data leak risk
+
+Risk: MEDIUM
+
+------------------------------------------------------------
+[22] CEMT INQUIRE MONITOR
+------------------------------------------------------------
+Look For:
+  - Monitoring on/off
+  - Frequency
+
+Vulnerability If Found:
+  - Monitoring OFF = No audit trail
+  - No performance tracking
+
+Why Valid Even With Admin Rights:
+  - No audit trail (compliance violation)
+  - Investigation impossible after incident
+  - Insider threat unmonitored
+
+Risk: HIGH
+
+------------------------------------------------------------
+[23] CEMT INQUIRE STATISTICS
+------------------------------------------------------------
+Look For:
+  - Collection interval
+  - Status
+
+Vulnerability If Found:
+  - Statistics OFF = No audit
+  - No trend analysis
+
+Why Valid Even With Admin Rights:
+  - No audit trail
+  - Anomaly detection impossible
+
+Risk: HIGH
+
+------------------------------------------------------------
+[24] CEMT INQUIRE CONNECTION
+------------------------------------------------------------
+Look For:
+  - VTAM connections
+  - NETNAME
+  - Status
+
+Vulnerability If Found:
+  - Unauthorized connections
+  - External system access
+
+Why Valid Even With Admin Rights:
+  - Unauthorized external access
+  - No audit on connections
+
+Risk: MEDIUM
+
+------------------------------------------------------------
+[25] CEMT INQUIRE IPCONN
+------------------------------------------------------------
+Look For:
+  - Remote system info
+  - Port numbers
+  - Security
+
+Vulnerability If Found:
+  - IPIC without auth
+  - Remote system exposed
+
+Why Valid Even With Admin Rights:
+  - Unauthorized remote access
+  - Audit gap
+
+Risk: MEDIUM
+
+------------------------------------------------------------
+[26] CEMT INQUIRE VTAM
+------------------------------------------------------------
+Look For:
+  - ACB status
+  - APPLID
+
+Vulnerability If Found:
+  - ACB open without auth
+  - APPLID exposed
+
+Why Valid Even With Admin Rights:
+  - Unauthorized network access
+  - Audit gap
+
+Risk: MEDIUM
+
+------------------------------------------------------------
+[27] CEMT INQUIRE UOWLINK
+------------------------------------------------------------
+Look For:
+  - GTRID
+  - Host info
+
+Vulnerability If Found:
+  - IPIC XA transaction exposed
+  - Host info disclosure
+
+Why Valid Even With Admin Rights:
+  - Data integrity risk
+  - Host info aids attackers
+
+Risk: MEDIUM
+
+------------------------------------------------------------
+[28] CEMT INQUIRE EXITPROGRAM
+------------------------------------------------------------
+Look For:
+  - User exits
+  - Program names
+  - Status
+
+Vulnerability If Found:
+  - User exits enabled
+  - Code injection possible
+
+Why Valid Even With Admin Rights:
+  - Code injection surface
+  - No audit on exit usage
+  - RCE possible
+
+Risk: HIGH
+
+------------------------------------------------------------
+[29] CEMT INQUIRE JVMENDPOINT
+------------------------------------------------------------
+Look For:
+  - Port numbers
+  - Status
+
+Vulnerability If Found:
+  - JVM endpoint exposed
+  - Unauthenticated access
+
+Why Valid Even With Admin Rights:
+  - Unauthorized access
+  - Audit gap
+
+Risk: MEDIUM
+
+------------------------------------------------------------
+[30] CEMT INQUIRE DSAS
+------------------------------------------------------------
+Look For:
+  - Size
+  - Usage
+  - Limits
+
+Vulnerability If Found:
+  - DSA full = DoS possible
+  - No limits = Resource exhaustion
+
+Why Valid Even With Admin Rights:
+  - DoS possible
+  - Resource exhaustion
+  - No monitoring
+
+Risk: MEDIUM
+
+------------------------------------------------------------
+[31] CEMT INQUIRE JOURNALNUM
+------------------------------------------------------------
+Look For:
+  - Journal numbers
+  - Dataset names
+
+Vulnerability If Found:
+  - Journal dataset exposed
+  - Recovery data leak
+
+Why Valid Even With Admin Rights:
+  - Data leak via journal
+  - No audit on journal access
+
+Risk: MEDIUM
+
+------------------------------------------------------------
+[32] CEMT INQUIRE ENQ
+------------------------------------------------------------
+Look For:
+  - Locks held
+  - Contention
+
+Vulnerability If Found:
+  - Deadlock possible
+  - DoS via lock contention
+
+Why Valid Even With Admin Rights:
+  - DoS possible
+  - No monitoring
+
+Risk: MEDIUM
+
+------------------------------------------------------------
+[33] CEMT INQUIRE PROCESSTYPE
+------------------------------------------------------------
+Look For:
+  - Process types
+  - Transactions
+  - Programs
+
+Vulnerability If Found:
+  - Unauthorized process types
+  - Sensitive transactions exposed
+
+Why Valid Even With Admin Rights:
+  - Unauthorized execution
+  - Audit gap
+
+Risk: MEDIUM
+
+------------------------------------------------------------
+[34] CEMT INQUIRE REQID
+------------------------------------------------------------
+Look For:
+  - Request IDs
+  - Status
+  - Transaction
+
+Vulnerability If Found:
+  - Request ID enumeration
+  - Transaction mapping exposed
+
+Why Valid Even With Admin Rights:
+  - Information disclosure
+  - Audit gap
+
+Risk: MEDIUM
+
+------------------------------------------------------------
+[35] CEMT INQUIRE MODENAME
+------------------------------------------------------------
+Look For:
+  - VTAM session limits
+  - Max sessions
+
+Vulnerability If Found:
+  - Unlimited sessions = DoS
+  - Session hijacking possible
+
+Why Valid Even With Admin Rights:
+  - DoS possible
+  - Session hijacking
+  - No monitoring
+
+Risk: MEDIUM
+
+============================================================
+TOP 5 CRITICAL FINDINGS (CHECK FIRST)
+============================================================
+
+1. CEMT INQUIRE SYSTEM
+   -> CONFDATA=SHOW (Passwords exposed in dumps)
+   -> SEC=NO (Security disabled)
+   -> XCMD=YES+CMDSEC=NO (Command security disabled)
+
+2. CEMT INQUIRE TCLASS
+   -> Protection(1) (No auth required)
+
+3. CEMT INQUIRE TCPIPSERVICE
+   -> AUTHENTICATE=NONE + SSL=NO (Unauth web access)
+
+4. CEMT INQUIRE PROGRAM
+   -> CEDA/CECI/CEMT accessible (Config modify possible)
+
+5. CEMT INQUIRE DB2CONN
+   -> AUTHTYPE(USERID) (User ID spoofing)
+
+============================================================
+SAFE RULE
+============================================================
+ONLY USE CEMT INQUIRE.
+NEVER USE SET, PERFORM, DISCARD, or ALTER.
+PRESS PF3 AFTER EACH COMMAND.
+============================================================
